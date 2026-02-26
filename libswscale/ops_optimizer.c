@@ -518,8 +518,14 @@ retry:
 
         case SWS_OP_DITHER:
             for (int i = 0; i < 4; i++) {
-                noop &= (prev->comps.flags[i] & SWS_COMP_EXACT) ||
-                        next->comps.unused[i];
+                if (next->comps.unused[i] || op->dither.y_offset[i] < 0)
+                    continue;
+                if (prev->comps.flags[i] & SWS_COMP_EXACT) {
+                    op->dither.y_offset[i] = -1; /* unnecessary dither */
+                    goto retry;
+                } else {
+                    noop = false;
+                }
             }
 
             if (noop) {

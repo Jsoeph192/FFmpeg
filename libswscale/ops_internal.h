@@ -75,9 +75,14 @@ typedef struct SwsOpExec {
     int32_t slice_y, slice_h;   /* Start and height of current slice */
     int32_t block_size_in;      /* Size of a block of pixels in bytes */
     int32_t block_size_out;
+
+    const AVFrame *src_frame_ptr;
+    const AVFrame *dst_frame_ptr;
 } SwsOpExec;
 
-static_assert(sizeof(SwsOpExec) == 24 * sizeof(void *) + 6 * sizeof(int32_t),
+static_assert(sizeof(SwsOpExec) == 24 * sizeof(void *) +
+                                   6 * sizeof(int32_t) +
+                                   2 * sizeof(void *),
               "SwsOpExec layout mismatch");
 
 /**
@@ -94,10 +99,11 @@ typedef void (*SwsOpFunc)(const SwsOpExec *exec, const void *priv,
 typedef struct SwsCompiledOp {
     SwsOpFunc func;
 
-    int block_size; /* number of pixels processed per iteration */
-    int over_read;  /* implementation over-reads input by this many bytes */
-    int over_write; /* implementation over-writes output by this many bytes */
-    int cpu_flags;  /* active set of CPU flags (informative) */
+    int slice_align; /* slice height alignment */
+    int block_size;  /* number of pixels processed per iteration */
+    int over_read;   /* implementation over-reads input by this many bytes */
+    int over_write;  /* implementation over-writes output by this many bytes */
+    int cpu_flags;   /* active set of CPU flags (informative) */
 
     /* Arbitrary private data */
     void *priv;
@@ -114,6 +120,13 @@ typedef struct SwsOpBackend {
      * Returns 0 or a negative error code.
      */
     int (*compile)(SwsContext *ctx, SwsOpList *ops, SwsCompiledOp *out);
+
+    /**
+     * If NONE, backend only supports software frames.
+     * Otherwise, frame hardware format must match hw_format for the backend
+     * to be used.
+     */
+    enum AVPixelFormat hw_format;
 } SwsOpBackend;
 
 /* List of all backends, terminated by NULL */
