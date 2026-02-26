@@ -262,6 +262,7 @@ External library support:
   --enable-libopencolorio  enable color management via OpenColorIO [no]
   --enable-libopenvino     enable OpenVINO as a DNN module backend
                            for DNN based filters like dnn_processing [no]
+  --enable-libdvdcss       enable libdvdcss for ripping dvds [no] 
   --enable-libopus         enable Opus de/encoding via libopus [no]
   --enable-libplacebo      enable libplacebo library [no]
   --enable-libpulse        enable Pulseaudio input via libpulse [no]
@@ -2041,6 +2042,7 @@ EXTERNAL_LIBRARY_LIST="
     libcodec2
     libdav1d
     libdc1394
+    libdvdcss
     libflite
     libfontconfig
     libfreetype
@@ -7228,6 +7230,7 @@ enabled libbs2b           && require_pkg_config libbs2b libbs2b bs2b.h bs2b_open
 enabled libcelt           && require libcelt celt/celt.h celt_decode -lcelt0 &&
                              { check_lib libcelt celt/celt.h celt_decoder_create_custom -lcelt0 ||
                                die "ERROR: libcelt must be installed and version must be >= 0.11.0."; }
+enabled libdvdcss         && require_pkg_config libdvdcss libdvdcss dvdcss_open
 enabled libcaca           && require_pkg_config libcaca caca caca.h caca_create_canvas
 enabled libcodec2         && require libcodec2 codec2/codec2.h codec2_create -lcodec2
 enabled libdav1d          && require_pkg_config libdav1d "dav1d >= 1.0.0" "dav1d/dav1d.h" dav1d_version
