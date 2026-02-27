@@ -4066,6 +4066,7 @@ libssh_protocol_deps="libssh"
 libtls_conflict="openssl gnutls mbedtls"
 libzmq_protocol_deps="libzmq"
 libzmq_protocol_select="network"
+dvdcss_protocol_deps="libdvdcss"
 
 # filters
 ametadata_filter_deps="avformat"
