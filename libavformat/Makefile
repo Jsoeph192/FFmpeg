@@ -190,6 +190,7 @@ OBJS-$(CONFIG_DAUD_MUXER)                += daudenc.o
 OBJS-$(CONFIG_DCSTR_DEMUXER)             += dcstr.o
 OBJS-$(CONFIG_DERF_DEMUXER)              += derf.o pcm.o
 OBJS-$(CONFIG_DFA_DEMUXER)               += dfa.o
+OBJS-$(CONFIG_DVDCSS_PROTOCOL)           += dvdcss_protocol.o
 OBJS-$(CONFIG_DFPWM_DEMUXER)             += dfpwmdec.o pcm.o
 OBJS-$(CONFIG_DFPWM_MUXER)               += rawenc.o
 OBJS-$(CONFIG_DHAV_DEMUXER)              += dhav.o
