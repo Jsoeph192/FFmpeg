@@ -100,8 +100,8 @@ static void process(const SwsOpExec *exec, const void *priv,
     FFVulkanFunctions *vk = &p->s->vkctx.vkfn;
     ff_vk_exec_start(&p->s->vkctx, ec);
 
-    AVFrame *src_f = (AVFrame *)exec->src_frame_ptr;
-    AVFrame *dst_f = (AVFrame *)exec->dst_frame_ptr;
+    AVFrame *src_f = (AVFrame *) exec->in_frame->avframe;
+    AVFrame *dst_f = (AVFrame *) exec->out_frame->avframe;
     ff_vk_exec_add_dep_frame(&p->s->vkctx, ec, src_f,
                              VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT);
@@ -167,7 +167,7 @@ static int add_ops_glsl(VulkanPriv *p, FFVulkanOpsCtx *s,
     void *spv_opaque = NULL;
 
     /* Interlaced formats are not currently supported */
-    if (ops->src.interlaced || ops->src.interlaced)
+    if (ops->src.interlaced || ops->dst.interlaced)
         return AVERROR(ENOTSUP);
 
     err = ff_vk_shader_init(&s->vkctx, shd, "sws_pass",
