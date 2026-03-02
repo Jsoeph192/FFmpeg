@@ -284,6 +284,7 @@ External library support:
   --enable-libssh          enable SFTP protocol via libssh [no]
   --enable-libsvtav1       enable AV1 encoding via SVT [no]
   --enable-libsvtjpegxs    enable JPEGXS encoding/decoding via SVT [no]
+  --enable-libsvtvp9       enable VP9 encoding via svt [no]
   --enable-libtensorflow   enable TensorFlow as a DNN module backend
                            for DNN based filters like sr [no]
   --enable-libtesseract    enable Tesseract, needed for ocr filter [no]
@@ -301,6 +302,7 @@ External library support:
                            native implementation exists [no]
   --enable-libvpx          enable VP8 and VP9 de/encoding via libvpx [no]
   --enable-libvvenc        enable H.266/VVC encoding via vvenc [no]
+  --enable-libvvdec        enable H.266/VVC decoding via vvdec [no]
   --enable-libwebp         enable WebP encoding via libwebp [no]
   --enable-libx264         enable H.264 encoding via x264 [no]
   --enable-libx265         enable HEVC encoding via x265 [no]
@@ -347,6 +349,7 @@ External library support:
   --enable-whisper         enable whisper filter [no]
   --disable-xlib           disable xlib [autodetect]
   --disable-zlib           disable zlib [autodetect]
+  --enable-libsvthevc      enable HEVC encoding via svt [no]
 
   The following libraries provide various hardware acceleration features:
   --disable-amf            disable AMF video encoding code [autodetect]
@@ -2082,11 +2085,13 @@ EXTERNAL_LIBRARY_LIST="
     libshaderc
     libshine
     libsmbclient
+    libsvtvp9
     libsnappy
     libsoxr
     libspeex
     libsrt
     libssh
+    libsvthevc
     libsvtav1
     libsvtjpegxs
     libtensorflow
@@ -2101,6 +2106,7 @@ EXTERNAL_LIBRARY_LIST="
     libvorbis
     libvpx
     libvvenc
+    libvvdec
     libwebp
     libxevd
     libxevdb
@@ -3815,7 +3821,10 @@ libvpx_vp8_decoder_deps="libvpx"
 libvpx_vp8_encoder_deps="libvpx"
 libvpx_vp9_decoder_deps="libvpx"
 libvpx_vp9_encoder_deps="libvpx"
+libsvt_vp9_encoder_deps="libsvtvp9"
 libvvenc_encoder_deps="libvvenc"
+libvvdec_decoder_deps="libvvdec"
+libvvdec_decoder_select="vvc_mp4toannexb_bsf"
 libwebp_encoder_deps="libwebp"
 libwebp_anim_encoder_deps="libwebp"
 libx262_encoder_deps="libx262"
@@ -3835,6 +3844,7 @@ vapoursynth_demuxer_deps="vapoursynth"
 videotoolbox_suggest="coreservices"
 videotoolbox_deps="corefoundation coremedia corevideo VTDecompressionSessionDecodeFrame"
 videotoolbox_encoder_deps="videotoolbox VTCompressionSessionPrepareToEncodeFrames"
+libsvt_hevc_encoder_deps="libsvthevc"
 
 # demuxers / muxers
 ac3_demuxer_select="ac3_parser"
@@ -4069,7 +4079,7 @@ libssh_protocol_deps="libssh"
 libtls_conflict="openssl gnutls mbedtls"
 libzmq_protocol_deps="libzmq"
 libzmq_protocol_select="network"
-dvdcss_protocol_deps="libdvdcss"
+dvdcss_protocol_deps="dvdcss"
 
 # filters
 ametadata_filter_deps="avformat"
@@ -7009,7 +7019,7 @@ check_lib mediandk "stdint.h media/NdkMediaFormat.h" AMediaFormat_new -lmediandk
 check_lib camera2ndk "stdbool.h stdint.h camera/NdkCameraManager.h" ACameraManager_create -lcamera2ndk
 
 enabled appkit       && check_apple_framework AppKit
-enabled audiotoolbox && check_apple_framework AudioToolbox
+enable audiotoolbox
 enabled avfoundation && check_apple_framework AVFoundation
 enabled coreimage    && check_apple_framework CoreImage
 enabled metal        && check_apple_framework Metal
@@ -7364,6 +7374,7 @@ enabled libssh            && require_pkg_config libssh "libssh >= 0.6.0" libssh/
 enabled libspeex          && require_pkg_config libspeex speex speex/speex.h speex_decoder_init
 enabled libsrt            && require_pkg_config libsrt "srt >= 1.3.0" srt/srt.h srt_socket
 enabled libsvtav1         && require_pkg_config libsvtav1 "SvtAv1Enc >= 0.9.0" EbSvtAv1Enc.h svt_av1_enc_init_handle
+enabled libsvthevc        && require_pkg_config libsvthevc SvtHevcEnc EbApi.h EbInitHandle
 enabled libsvtjpegxs      && require_pkg_config libsvtjpegxs "SvtJpegxs >= 0.10.0" SvtJpegxsEnc.h svt_jpeg_xs_encoder_init
 enabled libtensorflow     && require libtensorflow tensorflow/c/c_api.h TF_Version -ltensorflow
 enabled libtesseract      && require_pkg_config libtesseract tesseract tesseract/capi.h TessBaseAPICreate
@@ -7376,6 +7387,7 @@ enabled libtwolame        && require libtwolame twolame.h twolame_init -ltwolame
                                die "ERROR: libtwolame must be installed and version must be >= 0.3.10"; }
 enabled libuavs3d         && require_pkg_config libuavs3d "uavs3d >= 1.1.41" uavs3d.h uavs3d_decode
 enabled libv4l2           && require_pkg_config libv4l2 libv4l2 libv4l2.h v4l2_ioctl
+enabled libsvtvp9         && require_pkg_config libsvtvp9 SvtVp9Enc EbSvtVp9Enc.h       eb_vp9_svt_init_handle
 enabled libvidstab        && require_pkg_config libvidstab "vidstab >= 0.98" vid.stab/libvidstab.h vsMotionDetectInit
 enabled libvmaf           && require_pkg_config libvmaf "libvmaf >= 2.0.0" libvmaf.h vmaf_init
 enabled libvmaf           && check_pkg_config libvmaf_cuda "libvmaf >= 2.0.0" libvmaf_cuda.h vmaf_cuda_state_init
@@ -7409,6 +7421,7 @@ enabled libvpx            && {
 }
 
 enabled libvvenc          && require_pkg_config libvvenc "libvvenc >= 1.6.1" "vvenc/vvenc.h" vvenc_get_version
+enabled libvvdec          && require_pkg_config libvvdec "libvvdec >= 1.6.0" "vvdec/vvdec.h" vvdec_get_version
 enabled libwebp           && {
     enabled libwebp_encoder      && require_pkg_config libwebp "libwebp >= 0.2.0" webp/encode.h WebPGetEncoderVersion
     enabled libwebp_anim_encoder && check_pkg_config libwebp_anim_encoder "libwebpmux >= 0.4.0" webp/mux.h WebPAnimEncoderOptionsInit; }
