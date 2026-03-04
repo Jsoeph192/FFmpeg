@@ -2045,6 +2045,8 @@ EXTERNAL_LIBRARY_LIST="
     libcodec2
     libdav1d
     libdc1394
+    libdvdnav
+    libdvdread
     libdvdcss
     libflite
     libfontconfig
@@ -3874,7 +3876,7 @@ dtshd_demuxer_select="dca_parser"
 dv_demuxer_select="dvprofile"
 dv_muxer_select="dvprofile"
 dvdvideo_demuxer_select="mpegps_demuxer"
-dvdvideo_demuxer_deps="libdvdnav libdvdread"
+dvdvideo_demuxer_deps="libdvdnav libdvdread libdvdcss"
 dxa_demuxer_select="riffdec"
 eac3_demuxer_select="ac3_parser"
 evc_demuxer_select="evc_frame_merge_bsf evc_parser"
