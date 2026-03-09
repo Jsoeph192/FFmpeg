@@ -1729,6 +1729,8 @@ static int64_t get_frag_time(AVFormatContext *s, AVStream *dst_st,
     }
 
     for (i = 0; i < frag_index->item[index].nb_stream_info; i++) {
+        if (dst_st->id != frag_index->item[index].stream_info[i].id)
+            continue;
         AVStream *frag_stream = NULL;
         frag_stream_info = &frag_index->item[index].stream_info[i];
         for (j = 0; j < s->nb_streams; j++) {
@@ -10802,8 +10804,6 @@ static int mov_parse_lcevc_streams(AVFormatContext *s)
             !(sc->tref_flags & MOV_TREF_FLAG_ENHANCEMENT))
             continue;
 
-        st->codecpar->codec_type = AVMEDIA_TYPE_DATA;
-
         stg = avformat_stream_group_create(s, AV_STREAM_GROUP_PARAMS_LCEVC, NULL);
         if (!stg)
             return AVERROR(ENOMEM);
@@ -10811,8 +10811,6 @@ static int mov_parse_lcevc_streams(AVFormatContext *s)
         stg->id = st->id;
         stg->params.lcevc->width  = st->codecpar->width;
         stg->params.lcevc->height = st->codecpar->height;
-        st->codecpar->width = 0;
-        st->codecpar->height = 0;
 
         while (st_base = mov_find_reference_track(s, st, j)) {
             err = avformat_stream_group_add_stream(stg, st_base);
