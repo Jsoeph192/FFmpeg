@@ -215,6 +215,9 @@ static int decode_usac_element_pair(AACDecContext *ac,
 
     if (e->stereo_config_index) {
         e->mps.freq_res = get_bits(gb, 3); /* bsFreqRes */
+        if (!e->mps.freq_res)
+            return AVERROR_INVALIDDATA; /* value 0 is reserved */
+
         e->mps.fixed_gain = get_bits(gb, 3); /* bsFixedGainDMX */
         e->mps.temp_shape_config = get_bits(gb, 2); /* bsTempShapeConfig */
         e->mps.decorr_config = get_bits(gb, 2); /* bsDecorrConfig */
@@ -1327,13 +1330,13 @@ static void spectrum_decode(AACDecContext *ac, AACUSACConfig *usac,
 
     /* Save coefficients and alpha values for prediction reasons */
     if (nb_channels > 1) {
-        AACUsacStereo *us = &cpe->us;
+        AACUsacStereo *us2 = &cpe->us;
         for (int ch = 0; ch < nb_channels; ch++) {
             SingleChannelElement *sce = &cpe->ch[ch];
             memcpy(sce->prev_coeffs, sce->coeffs, sizeof(sce->coeffs));
         }
-        memcpy(us->prev_alpha_q_re, us->alpha_q_re, sizeof(us->alpha_q_re));
-        memcpy(us->prev_alpha_q_im, us->alpha_q_im, sizeof(us->alpha_q_im));
+        memcpy(us2->prev_alpha_q_re, us2->alpha_q_re, sizeof(us2->alpha_q_re));
+        memcpy(us2->prev_alpha_q_im, us2->alpha_q_im, sizeof(us2->alpha_q_im));
     }
 
     for (int ch = 0; ch < nb_channels; ch++) {
@@ -1719,8 +1722,8 @@ static int parse_audio_preroll(AACDecContext *ac, GetBitContext *gb)
         }
 
         /* Byte alignment is not guaranteed. */
-        for (int i = 0; i < au_len; i++)
-            tmp_buf[i] = get_bits(gb, 8);
+        for (int j = 0; j < au_len; j++)
+            tmp_buf[j] = get_bits(gb, 8);
 
         ret = init_get_bits8(&gbc, tmp_buf, au_len);
         if (ret < 0)

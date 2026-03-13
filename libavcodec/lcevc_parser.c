@@ -25,6 +25,7 @@
 #include "get_bits.h"
 #include "h2645_parse.h"
 #include "lcevc.h"
+#include "lcevc_parse.h"
 #include "parser.h"
 #include "parser_internal.h"
 
@@ -100,22 +101,6 @@ static const struct {
     { 7680, 4800 },
 };
 
-static inline uint64_t get_mb(GetBitContext *s) {
-    int more, i = 0;
-    uint64_t mb = 0;
-
-    do {
-        int byte = get_bits(s, 8);
-        unsigned bits = byte & 0x7f;
-        more = byte & 0x80;
-        mb = (mb << 7) | bits;
-        if (++i == 10)
-            break;
-    } while (more);
-
-    return mb;
-}
-
 static int parse_nal_unit(AVCodecParserContext *s, AVCodecContext *avctx,
                           const H2645NAL *nal)
 {
@@ -125,10 +110,13 @@ static int parse_nal_unit(AVCodecParserContext *s, AVCodecContext *avctx,
 
     while (bytestream2_get_bytes_left(&gbc) > 1) {
         GetBitContext gb;
-        int payload_size_type, payload_type, payload_size;
+        uint64_t payload_size;
+        int payload_size_type, payload_type;
         int block_size;
 
-        init_get_bits8(&gb, gbc.buffer, bytestream2_get_bytes_left(&gbc));
+        int ret = init_get_bits8(&gb, gbc.buffer, bytestream2_get_bytes_left(&gbc));
+        if (ret < 0)
+            return ret;
 
         payload_size_type = get_bits(&gb, 3);
         payload_type      = get_bits(&gb, 5);
@@ -137,6 +125,9 @@ static int parse_nal_unit(AVCodecParserContext *s, AVCodecContext *avctx,
             return AVERROR_PATCHWELCOME;
         if (payload_size_type == 7)
             payload_size = get_mb(&gb);
+
+        if (payload_size > INT_MAX - (get_bits_count(&gb) >> 3))
+            return AVERROR_INVALIDDATA;
 
         block_size = payload_size + (get_bits_count(&gb) >> 3);
         if (block_size >= bytestream2_get_bytes_left(&gbc))

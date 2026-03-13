@@ -85,12 +85,20 @@ int ff_sws_ops_compile(SwsContext *ctx, const SwsOpList *ops, SwsCompiledOp *out
                "block size = %d, over-read = %d, over-write = %d, cpu flags = 0x%x\n",
                backend->name, out->block_size, out->over_read, out->over_write,
                out->cpu_flags);
+
+        ff_sws_op_list_print(ctx, AV_LOG_VERBOSE, AV_LOG_TRACE, ops);
         return 0;
     }
 
-    av_log(ctx, AV_LOG_WARNING, "No backend found for operations:\n");
-    ff_sws_op_list_print(ctx, AV_LOG_WARNING, AV_LOG_TRACE, ops);
     return AVERROR(ENOTSUP);
+}
+
+void ff_sws_compiled_op_unref(SwsCompiledOp *comp)
+{
+    if (comp->free)
+        comp->free(comp->priv);
+
+    *comp = (SwsCompiledOp) {0};
 }
 
 static void op_pass_free(void *ptr)
@@ -99,9 +107,7 @@ static void op_pass_free(void *ptr)
     if (!p)
         return;
 
-    if (p->comp.free)
-        p->comp.free(p->comp.priv);
-
+    ff_sws_compiled_op_unref(&p->comp);
     av_free(p);
 }
 
@@ -115,8 +121,8 @@ static inline void get_row_data(const SwsOpPass *p, const int y,
         out[i] = base->out[i] + (y >> base->out_sub_y[i]) * base->out_stride[i];
 }
 
-static void op_pass_setup(const SwsFrame *out, const SwsFrame *in,
-                          const SwsPass *pass)
+static int op_pass_setup(const SwsFrame *out, const SwsFrame *in,
+                         const SwsPass *pass)
 {
     const AVPixFmtDescriptor *indesc  = av_pix_fmt_desc_get(in->format);
     const AVPixFmtDescriptor *outdesc = av_pix_fmt_desc_get(out->format);
@@ -179,8 +185,7 @@ static void op_pass_setup(const SwsFrame *out, const SwsFrame *in,
         exec->out_bump[i] = exec->out_stride[i] - blocks_main * exec->block_size_out;
     }
 
-    exec->in_frame  = in;
-    exec->out_frame = out;
+    return 0;
 }
 
 /* Dispatch kernel over the last column of the image using memcpy */
@@ -315,8 +320,8 @@ static int rw_pixel_bits(const SwsOp *op)
     return elems * size * bits;
 }
 
-static int compile(SwsGraph *graph, const SwsOpList *ops,
-                   const SwsFormat *dst, SwsPass *input, SwsPass **output)
+static int compile(SwsGraph *graph, const SwsOpList *ops, SwsPass *input,
+                   SwsPass **output)
 {
     SwsContext *ctx = graph->ctx;
     SwsOpPass *p = av_mallocz(sizeof(*p));
@@ -326,6 +331,15 @@ static int compile(SwsGraph *graph, const SwsOpList *ops,
     int ret = ff_sws_ops_compile(ctx, ops, &p->comp);
     if (ret < 0)
         goto fail;
+
+    const SwsFormat *dst = &ops->dst;
+    if (p->comp.opaque) {
+        SwsCompiledOp c = p->comp;
+        av_free(p);
+        return ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
+                                     input, c.slice_align, c.func_opaque,
+                                     NULL, c.priv, c.free, output);
+    }
 
     const SwsOp *read  = ff_sws_op_list_input(ops);
     const SwsOp *write = ff_sws_op_list_output(ops);
@@ -345,34 +359,26 @@ static int compile(SwsGraph *graph, const SwsOpList *ops,
         p->idx_out[i] = i < p->planes_out ? ops->order_dst.in[i] : -1;
     }
 
-    SwsPass *pass;
-    ret = ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
-                                input, p->comp.slice_align, p, op_pass_run,
-                                &pass);
-    if (ret < 0)
-        goto fail;
-
-    pass->setup = op_pass_setup;
-    pass->free  = op_pass_free;
-
-    *output = pass;
-    return 0;
+    return ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
+                                 input, p->comp.slice_align, op_pass_run,
+                                 op_pass_setup, p, op_pass_free, output);
 
 fail:
     op_pass_free(p);
     return ret;
 }
 
-int ff_sws_compile_pass(SwsGraph *graph, SwsOpList *ops, int flags,
-                        const SwsFormat *dst, SwsPass *input, SwsPass **output)
+int ff_sws_compile_pass(SwsGraph *graph, SwsOpList **pops, int flags,
+                        SwsPass *input, SwsPass **output)
 {
     SwsContext *ctx = graph->ctx;
-    int ret;
+    SwsOpList *ops = *pops;
+    int ret = 0;
 
     /* Check if the whole operation graph is an end-to-end no-op */
     if (ff_sws_op_list_is_noop(ops)) {
         *output = input;
-        return 0;
+        goto out;
     }
 
     const SwsOp *read  = ff_sws_op_list_input(ops);
@@ -380,16 +386,24 @@ int ff_sws_compile_pass(SwsGraph *graph, SwsOpList *ops, int flags,
     if (!read || !write) {
         av_log(ctx, AV_LOG_ERROR, "First and last operations must be a read "
                "and write, respectively.\n");
-        return AVERROR(EINVAL);
+        ret = AVERROR(EINVAL);
+        goto out;
     }
 
     if (flags & SWS_OP_FLAG_OPTIMIZE) {
         ret = ff_sws_op_list_optimize(ops);
         if (ret < 0)
-            return ret;
-    } else {
-        ff_sws_op_list_update_comps(ops);
+            goto out;
     }
 
-    return compile(graph, ops, dst, input, output);
+    ret = compile(graph, ops, input, output);
+
+out:
+    if (ret == AVERROR(ENOTSUP)) {
+        av_log(ctx, AV_LOG_WARNING, "No backend found for operations:\n");
+        ff_sws_op_list_print(ctx, AV_LOG_WARNING, AV_LOG_TRACE, ops);
+    }
+    ff_sws_op_list_free(&ops);
+    *pops = NULL;
+    return ret;
 }
