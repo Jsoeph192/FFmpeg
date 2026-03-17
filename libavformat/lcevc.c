@@ -226,13 +226,13 @@ int ff_isom_write_lvcc(AVIOContext *pb, const uint8_t *data, int len)
 
             ret = write_nalu(&lvcc, idr_pb, nal);
             if (ret < 0)
-                return ret;
+                goto fail;
         } else if (nal->type == LCEVC_NON_IDR_NUT) {
             nb_nidr++;
 
             ret = write_nalu(&lvcc, nidr_pb, nal);
             if (ret < 0)
-                return ret;
+                goto fail;
         }
     }
     idr_size = avio_get_dyn_buf(idr_pb, &idr);
@@ -264,7 +264,7 @@ int ff_isom_write_lvcc(AVIOContext *pb, const uint8_t *data, int len)
     }
     if (nb_nidr) {
         avio_w8(pb, LCEVC_NON_IDR_NUT);
-        avio_wb16(pb, nb_idr);
+        avio_wb16(pb, nb_nidr);
         avio_write(pb, nidr, nidr_size);
     }
 
