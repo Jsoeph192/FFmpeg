@@ -3680,7 +3680,8 @@ static int mov_read_sdtp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
 {
     AVStream *st;
     MOVStreamContext *sc;
-    int64_t i, entries;
+    unsigned int i;
+    int64_t entries;
 
     if (c->fc->nb_streams < 1)
         return 0;
@@ -3699,7 +3700,7 @@ static int mov_read_sdtp(MOVContext *c, AVIOContext *pb, MOVAtom atom)
     av_freep(&sc->sdtp_data);
     sc->sdtp_count = 0;
 
-    if (entries < 0 || entries > SIZE_MAX)
+    if (entries < 0 || entries > UINT_MAX)
         return AVERROR(ERANGE);
 
     sc->sdtp_data = av_malloc(entries);
@@ -11796,7 +11797,7 @@ const FFInputFormat ff_mov_demuxer = {
     .p.name         = "mov,mp4,m4a,3gp,3g2,mj2",
     .p.long_name    = NULL_IF_CONFIG_SMALL("QuickTime / MOV"),
     .p.priv_class   = &mov_class,
-    .p.extensions   = "mov,mp4,m4a,3gp,3g2,mj2,psp,m4b,ism,ismv,isma,f4v,avif,heic,heif",
+    .p.extensions   = "mov,mp4,m4a,3gp,3g2,mj2,psp,m4v,m4b,ism,ismv,isma,f4v,avif,heic,heif",
     .p.flags        = AVFMT_NO_BYTE_SEEK | AVFMT_SEEK_TO_PTS | AVFMT_SHOW_IDS,
     .priv_data_size = sizeof(MOVContext),
     .flags_internal = FF_INFMT_FLAG_INIT_CLEANUP,

@@ -1,6 +1,4 @@
 /*
- * LCEVC helper functions for muxers
- *
  * This file is part of FFmpeg.
  *
  * FFmpeg is free software; you can redistribute it and/or
@@ -18,25 +16,17 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
-#ifndef AVFORMAT_LCEVC_H
-#define AVFORMAT_LCEVC_H
+#ifndef AVCODEC_X86_VIDEODSP_H
+#define AVCODEC_X86_VIDEODSP_H
 
+#include <stddef.h>
 #include <stdint.h>
-#include "avio.h"
 
-typedef struct LCEVCDecoderConfigurationRecord {
-    uint8_t  profile_idc;
-    uint8_t  level_idc;
-    uint8_t  chroma_format_idc;
-    uint8_t  bit_depth_luma_minus8;
-    uint8_t  bit_depth_chroma_minus8;
-    uint32_t pic_width_in_luma_samples;
-    uint32_t pic_height_in_luma_samples;
-} LCEVCDecoderConfigurationRecord;
+void ff_emulated_edge_mc_sse2(uint8_t *buf, const uint8_t *src,
+                              ptrdiff_t buf_stride,
+                              ptrdiff_t src_stride,
+                              int block_w, int block_h,
+                              int src_x, int src_y, int w,
+                              int h);
 
-int ff_isom_write_lvcc(AVIOContext *pb, const uint8_t *data, int len);
-
-int ff_lcvec_parse_config_record(LCEVCDecoderConfigurationRecord *lvcc,
-                                 const uint8_t *buf, int size);
-
-#endif /* AVFORMAT_LCEVC_H */
+#endif /* AVCODEC_X86_VIDEODSP_H */
