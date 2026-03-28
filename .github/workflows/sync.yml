@@ -1,9 +1,9 @@
 name: Sync FFmpeg Upstream Daily
 
 on:
-  workflow_dispatch:  # Manual trigger
+  workflow_dispatch: 
   schedule:
-    - cron: '0 0 * * *'  # Daily at 0:00 UTC
+    - cron: "*/10 * * * *" 
 
 jobs:
   sync:
