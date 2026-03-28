@@ -12,7 +12,7 @@ jobs:
       - name: Checkout your fork
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.PAT }}
+          token: ${{ secrets.GITHUB_TOKEN }}  # Use built-in token
           fetch-depth: 0
           persist-credentials: true
 
@@ -20,36 +20,14 @@ jobs:
         run: |
           git config user.name "GitHub Actions"
           git config user.email "actions@github.com"
-          git config pull.rebase true
-          git config pull.ff only
 
       - name: Add and fetch upstream
         run: |
           git remote add upstream https://github.com/FFmpeg/FFmpeg.git 2>/dev/null || true
           git fetch upstream
-          git fetch origin
 
-      - name: Get commit information
+      - name: Sync with upstream
         run: |
-          echo "=== Your latest commits ==="
-          git log --oneline -5
-          echo ""
-          echo "=== Upstream latest commits ==="
-          git log --oneline -5 upstream/master
-          echo ""
-          echo "=== Branch status ==="
-          git status
-
-      - name: Sync with upstream safely
-        run: |
-          # Store original state
-          ORIGINAL_BRANCH=$(git rev-parse --abbrev-ref HEAD)
-          if [ "$ORIGINAL_BRANCH" = "HEAD" ]; then
-            ORIGINAL_BRANCH="master"
-          fi
-          
-          echo "Working on branch: $ORIGINAL_BRANCH"
-          
           # Fetch latest from both remotes
           git fetch upstream
           git fetch origin
@@ -63,43 +41,19 @@ jobs:
             exit 0
           fi
           
-          # Try to rebase your changes on top of upstream (preserves your commits)
-          echo "Rebasing your commits on top of upstream..."
-          if git rebase upstream/master; then
-            echo "Successfully rebased on upstream"
-          else
-            echo "Rebase failed, trying merge instead..."
-            git rebase --abort 2>/dev/null || true
-            git reset --hard HEAD 2>/dev/null || true
+          echo "Merging upstream changes..."
+          git pull upstream master --no-commit
+          git commit -m "Sync with upstream FFmpeg master
             
-            # Fallback to merge approach
-            git checkout -b temp-merge-$(date +%s)
-            git pull upstream master --no-commit
-            git commit -m "Merge upstream FFmpeg changes
-            
-            Preserving existing local commits." || true
-            git checkout $ORIGINAL_BRANCH
-            git merge temp-merge-$(date +%s)
-            git branch -D temp-merge-$(date +%s)
-          fi
+            Automated sync to keep fork up to date." || echo "No changes to commit"
 
-      - name: Push changes preserving your commits
+      - name: Push changes
         run: |
-          # Check if there are changes to push
-          git diff-index --quiet HEAD -- || {
-            echo "Pushing changes to preserve your commits..."
-            git push origin HEAD:${{ github.ref_name || 'master' }} --force-with-lease
-            echo "Successfully synced with upstream while preserving your commits!"
-          } || {
-            echo "Pushing to ensure synchronization..."
-            git push origin HEAD:${{ github.ref_name || 'master' }}
-            echo "Repository is now up to date!"
-          }
+          git push origin HEAD:${{ github.ref_name || 'master' }}
+          echo "Successfully synced with upstream!"
 
       - name: Summary
         run: |
           echo "=== Sync Summary ==="
-          echo "Current HEAD: $(git rev-parse --short HEAD)"
-          echo "Upstream HEAD: $(git rev-parse --short upstream/master)"
-          echo "Your commits are preserved and upstream is synchronized"
           echo "Sync completed at: $(date -u)"
+          echo "Current commit: $(git rev-parse --short HEAD)"
