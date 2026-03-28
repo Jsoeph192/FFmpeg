@@ -137,6 +137,7 @@ typedef struct SwsOpEntry {
     /* Kernel implementation */
     SwsFuncPtr func;
     int (*setup)(const SwsImplParams *params, SwsImplResult *out); /* optional */
+    bool (*check)(const SwsImplParams *params); /* optional, return true if supported */
 } SwsOpEntry;
 
 /* Setup helpers */
@@ -148,6 +149,11 @@ int ff_sws_setup_q4(const SwsImplParams *params, SwsImplResult *out);
 static inline void ff_op_priv_free(SwsOpPriv *priv)
 {
     av_freep(&priv->ptr);
+}
+
+static inline void ff_op_priv_unref(SwsOpPriv *priv)
+{
+    av_refstruct_unref(&priv->ptr);
 }
 
 struct SwsOpTable {

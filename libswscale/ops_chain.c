@@ -72,8 +72,8 @@ int ff_sws_op_chain_append(SwsOpChain *chain, SwsFuncPtr func,
  * `op->linear.mask`, but may not contain any columns explicitly ignored by
  * `op->comps.unused`.
  *
- * For SWS_OP_READ, SWS_OP_WRITE, SWS_OP_SWAP_BYTES and SWS_OP_SWIZZLE, the
- * exact type is not checked, just the size.
+ * For unfiltered SWS_OP_READ/SWS_OP_WRITE, SWS_OP_SWAP_BYTES and
+ * SWS_OP_SWIZZLE, the exact type is not checked, just the size.
  *
  * Components set in `next.unused` are ignored when matching. If `flexible`
  * is true, the op body is ignored - only the operation, pixel type, and
@@ -88,6 +88,9 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
     switch (op->op) {
     case SWS_OP_READ:
     case SWS_OP_WRITE:
+        if (op->rw.filter && op->type != entry->type)
+            return 0;
+        /* fall through */;
     case SWS_OP_SWAP_BYTES:
     case SWS_OP_SWIZZLE:
         /* Only the size matters for these operations */
@@ -129,6 +132,7 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
     case SWS_OP_WRITE:
         if (op->rw.elems   != entry->rw.elems ||
             op->rw.frac    != entry->rw.frac  ||
+            op->rw.filter  != entry->rw.filter ||
             (op->rw.elems > 1 && op->rw.packed != entry->rw.packed))
             return 0;
         return score;
@@ -185,6 +189,9 @@ static int op_match(const SwsOp *op, const SwsOpEntry *entry, const SwsComps nex
         return score;
     case SWS_OP_SCALE:
         return av_cmp_q(op->c.q, entry->scale) ? 0 : score;
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
+        return score;
     case SWS_OP_TYPE_NB:
         break;
     }
@@ -205,34 +212,38 @@ int ff_sws_op_compile_tables(SwsContext *ctx, const SwsOpTable *const tables[],
     const SwsOp *op = &ops->ops[0];
     int ret, best_score = 0;
 
+    SwsImplParams params = {
+        .ctx    = ctx,
+        .op     = op
+    };
+
     for (int n = 0; n < num_tables; n++) {
         const SwsOpTable *table = tables[n];
         if (table->block_size && table->block_size != block_size ||
             table->cpu_flags & ~cpu_flags)
             continue;
 
+        params.table = table;
         for (int i = 0; table->entries[i]; i++) {
             const SwsOpEntry *entry = table->entries[i];
             int score = op_match(op, entry, next->comps);
-            if (score > best_score) {
-                best_score = score;
-                best_table = table;
-                best = entry;
-            }
+            if (score <= best_score)
+                continue;
+            if (entry->check && !entry->check(&params))
+                continue;
+            best_score = score;
+            best_table = table;
+            best = entry;
         }
     }
 
     if (!best)
         return AVERROR(ENOTSUP);
 
+    params.table = best_table;
+
     SwsImplResult res = {0};
     if (best->setup) {
-        const SwsImplParams params = {
-            .ctx    = ctx,
-            .op     = op,
-            .table  = best_table,
-        };
-
         ret = best->setup(&params, &res);
         if (ret < 0)
             return ret;

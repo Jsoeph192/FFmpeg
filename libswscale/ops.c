@@ -20,11 +20,13 @@
 
 #include "libavutil/avassert.h"
 #include "libavutil/avstring.h"
+#include "libavutil/bprint.h"
 #include "libavutil/bswap.h"
 #include "libavutil/mem.h"
 #include "libavutil/rational.h"
 #include "libavutil/refstruct.h"
 
+#include "format.h"
 #include "ops.h"
 #include "ops_internal.h"
 
@@ -110,6 +112,8 @@ const char *ff_sws_op_type_name(SwsOpType op)
     case SWS_OP_SCALE:       return "SWS_OP_SCALE";
     case SWS_OP_LINEAR:      return "SWS_OP_LINEAR";
     case SWS_OP_DITHER:      return "SWS_OP_DITHER";
+    case SWS_OP_FILTER_H:    return "SWS_OP_FILTER_H";
+    case SWS_OP_FILTER_V:    return "SWS_OP_FILTER_V";
     case SWS_OP_INVALID:     return "SWS_OP_INVALID";
     case SWS_OP_TYPE_NB: break;
     }
@@ -233,6 +237,11 @@ void ff_sws_apply_op_q(const SwsOp *op, AVRational x[4])
         for (int i = 0; i < 4; i++)
             x[i] = x[i].den ? av_mul_q(x[i], op->c.q) : x[i];
         return;
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
+        /* Filters have normalized energy by definition, so they don't
+         * conceptually modify individual components */
+        return;
     }
 
     av_unreachable("Invalid operation type!");
@@ -263,6 +272,24 @@ static void clear_undefined_values(AVRational dst[4], const AVRational src[4])
     }
 }
 
+static void apply_filter_weights(SwsComps *comps, const SwsComps *prev,
+                                 const SwsFilterWeights *weights)
+{
+    const AVRational posw = { weights->sum_positive, SWS_FILTER_SCALE };
+    const AVRational negw = { weights->sum_negative, SWS_FILTER_SCALE };
+    for (int i = 0; i < 4; i++) {
+        comps->flags[i] = prev->flags[i];
+        /* Only point sampling preserves exactness */
+        if (weights->filter_size != 1)
+            comps->flags[i] &= ~SWS_COMP_EXACT;
+        /* Update min/max assuming extremes */
+        comps->min[i] = av_add_q(av_mul_q(prev->min[i], posw),
+                                 av_mul_q(prev->max[i], negw));
+        comps->max[i] = av_add_q(av_mul_q(prev->min[i], negw),
+                                 av_mul_q(prev->max[i], posw));
+    }
+}
+
 /* Infer + propagate known information about components */
 void ff_sws_op_list_update_comps(SwsOpList *ops)
 {
@@ -280,6 +307,8 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
         case SWS_OP_LINEAR:
         case SWS_OP_SWAP_BYTES:
         case SWS_OP_UNPACK:
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V:
             break; /* special cases, handled below */
         default:
             memcpy(op->comps.min, prev.min, sizeof(prev.min));
@@ -303,6 +332,11 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
                 op->comps.flags[i] = prev.flags[i];
                 op->comps.min[i]   = prev.min[i];
                 op->comps.max[i]   = prev.max[i];
+            }
+
+            if (op->rw.filter) {
+                const SwsComps prev = op->comps;
+                apply_filter_weights(&op->comps, &prev, op->rw.kernel);
             }
             break;
         case SWS_OP_SWAP_BYTES:
@@ -419,6 +453,11 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
                     FFSWAP(AVRational, op->comps.min[i], op->comps.max[i]);
             }
             break;
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V: {
+            apply_filter_weights(&op->comps, &prev, op->filter.kernel);
+            break;
+        }
 
         case SWS_OP_INVALID:
         case SWS_OP_TYPE_NB:
@@ -448,6 +487,8 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
         case SWS_OP_MIN:
         case SWS_OP_MAX:
         case SWS_OP_SCALE:
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V:
             for (int i = 0; i < 4; i++)
                 op->comps.unused[i] = next.unused[i];
             break;
@@ -504,8 +545,15 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
 static void op_uninit(SwsOp *op)
 {
     switch (op->op) {
+    case SWS_OP_READ:
+        av_refstruct_unref(&op->rw.kernel);
+        break;
     case SWS_OP_DITHER:
         av_refstruct_unref(&op->dither.matrix);
+        break;
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V:
+        av_refstruct_unref(&op->filter.kernel);
         break;
     }
 
@@ -558,8 +606,16 @@ SwsOpList *ff_sws_op_list_duplicate(const SwsOpList *ops)
     for (int i = 0; i < copy->num_ops; i++) {
         const SwsOp *op = &copy->ops[i];
         switch (op->op) {
+        case SWS_OP_READ:
+            if (op->rw.kernel)
+                av_refstruct_ref(op->rw.kernel);
+            break;
         case SWS_OP_DITHER:
             av_refstruct_ref(op->dither.matrix);
+            break;
+        case SWS_OP_FILTER_H:
+        case SWS_OP_FILTER_V:
+            av_refstruct_ref(op->filter.kernel);
             break;
         }
     }
@@ -589,7 +645,8 @@ void ff_sws_op_list_remove_at(SwsOpList *ops, int index, int count)
 {
     const int end = ops->num_ops - count;
     av_assert2(index >= 0 && count >= 0 && index + count <= ops->num_ops);
-    op_uninit(&ops->ops[index]);
+    for (int i = 0; i < count; i++)
+        op_uninit(&ops->ops[index + i]);
     for (int i = index; i < end; i++)
         ops->ops[i] = ops->ops[i + count];
     ops->num_ops = end;
@@ -721,159 +778,275 @@ static char describe_comp_flags(SwsCompFlags flags)
         return '.';
 }
 
-static const char *describe_order(SwsSwizzleOp order, int planes, char buf[32])
+static void print_q(AVBPrint *bp, const AVRational q, bool ignore_den0)
 {
-    if (order.mask == SWS_SWIZZLE(0, 1, 2, 3).mask)
-        return "";
-
-    av_strlcpy(buf, ", via {", 32);
-    for (int i = 0; i < planes; i++)
-        av_strlcatf(buf, 32, "%s%d", i ? ", " : "", order.in[i]);
-    av_strlcat(buf, "}", 32);
-    return buf;
-}
-
-static const char *print_q(const AVRational q, char buf[], int buf_len)
-{
-    if (!q.den) {
-        return q.num > 0 ? "inf" : q.num < 0 ? "-inf" : "nan";
+    if (!q.den && ignore_den0) {
+        av_bprintf(bp, "_");
+    } else if (!q.den) {
+        av_bprintf(bp, "%s", q.num > 0 ? "inf" : q.num < 0 ? "-inf" : "nan");
     } else if (q.den == 1) {
-        snprintf(buf, buf_len, "%d", q.num);
-        return buf;
+        av_bprintf(bp, "%d", q.num);
     } else if (abs(q.num) > 1000 || abs(q.den) > 1000) {
-        snprintf(buf, buf_len, "%f", av_q2d(q));
-        return buf;
+        av_bprintf(bp, "%f", av_q2d(q));
     } else {
-        snprintf(buf, buf_len, "%d/%d", q.num, q.den);
-        return buf;
+        av_bprintf(bp, "%d/%d", q.num, q.den);
     }
 }
 
-#define PRINTQ(q) print_q(q, (char[32]){0}, sizeof(char[32]))
+static void print_q4(AVBPrint *bp, const AVRational q4[4], bool ignore_den0,
+                     const bool unused[4])
+{
+    av_bprintf(bp, "{");
+    for (int i = 0; i < 4; i++) {
+        if (i)
+            av_bprintf(bp, " ");
+        if (unused && unused[i]) {
+            av_bprintf(bp, "_");
+        } else {
+            print_q(bp, q4[i], ignore_den0);
+        }
+    }
+    av_bprintf(bp, "}");
+}
+
+void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
+{
+    const char *name  = ff_sws_op_type_name(op->op);
+
+    switch (op->op) {
+    case SWS_OP_INVALID:
+    case SWS_OP_SWAP_BYTES:
+        av_bprintf(bp, "%s", name);
+        break;
+    case SWS_OP_READ:
+    case SWS_OP_WRITE:
+        av_bprintf(bp, "%-20s: %d elem(s) %s >> %d", name,
+                   op->rw.elems,  op->rw.packed ? "packed" : "planar",
+                   op->rw.frac);
+        if (!op->rw.filter)
+            break;
+        const SwsFilterWeights *kernel = op->rw.kernel;
+        av_bprintf(bp, " + %d tap %s filter (%c)",
+                   kernel->filter_size, kernel->name,
+                   op->rw.filter == SWS_OP_FILTER_H ? 'H' : 'V');
+        break;
+    case SWS_OP_LSHIFT:
+        av_bprintf(bp, "%-20s: << %u", name, op->c.u);
+        break;
+    case SWS_OP_RSHIFT:
+        av_bprintf(bp, "%-20s: >> %u", name, op->c.u);
+        break;
+    case SWS_OP_PACK:
+    case SWS_OP_UNPACK:
+        av_bprintf(bp, "%-20s: {%d %d %d %d}", name,
+                   op->pack.pattern[0], op->pack.pattern[1],
+                   op->pack.pattern[2], op->pack.pattern[3]);
+        break;
+    case SWS_OP_CLEAR:
+        av_bprintf(bp, "%-20s: ", name);
+        print_q4(bp, op->c.q4, true, unused);
+        break;
+    case SWS_OP_SWIZZLE:
+        av_bprintf(bp, "%-20s: %d%d%d%d", name,
+                   op->swizzle.x, op->swizzle.y, op->swizzle.z, op->swizzle.w);
+        break;
+    case SWS_OP_CONVERT:
+        av_bprintf(bp, "%-20s: %s -> %s%s", name,
+                   ff_sws_pixel_type_name(op->type),
+                   ff_sws_pixel_type_name(op->convert.to),
+                   op->convert.expand ? " (expand)" : "");
+        break;
+    case SWS_OP_DITHER:
+        av_bprintf(bp, "%-20s: %dx%d matrix + {%d %d %d %d}", name,
+                   1 << op->dither.size_log2, 1 << op->dither.size_log2,
+                   op->dither.y_offset[0], op->dither.y_offset[1],
+                   op->dither.y_offset[2], op->dither.y_offset[3]);
+        break;
+    case SWS_OP_MIN:
+        av_bprintf(bp, "%-20s: x <= ", name);
+        print_q4(bp, op->c.q4, true, unused);
+        break;
+    case SWS_OP_MAX:
+        av_bprintf(bp, "%-20s: ", name);
+        print_q4(bp, op->c.q4, true, unused);
+        av_bprintf(bp, " <= x");
+        break;
+    case SWS_OP_LINEAR:
+        av_bprintf(bp, "%-20s: %s [", name, describe_lin_mask(op->lin.mask));
+        for (int i = 0; i < 4; i++) {
+            av_bprintf(bp, "%s[", i ? " " : "");
+            for (int j = 0; j < 5; j++) {
+                av_bprintf(bp, j ? " " : "");
+                print_q(bp, op->lin.m[i][j], false);
+            }
+            av_bprintf(bp, "]");
+        }
+        av_bprintf(bp, "]");
+        break;
+    case SWS_OP_SCALE:
+        av_bprintf(bp, "%-20s: * %d/%d", name, op->c.q.num, op->c.q.den);
+        break;
+    case SWS_OP_FILTER_H:
+    case SWS_OP_FILTER_V: {
+        const SwsFilterWeights *kernel = op->filter.kernel;
+        av_bprintf(bp, "%-20s: %d -> %d %s (%d taps)", name,
+                   kernel->src_size, kernel->dst_size,
+                   kernel->name, kernel->filter_size);
+        break;
+    }
+    case SWS_OP_TYPE_NB:
+        break;
+    }
+}
 
 void ff_sws_op_list_print(void *log, int lev, int lev_extra,
                           const SwsOpList *ops)
 {
+    AVBPrint bp;
     if (!ops->num_ops) {
         av_log(log, lev, "  (empty)\n");
         return;
     }
 
+    av_bprint_init(&bp, 0, AV_BPRINT_SIZE_AUTOMATIC);
+
     for (int i = 0; i < ops->num_ops; i++) {
         const SwsOp *op   = &ops->ops[i];
         const SwsOp *next = i + 1 < ops->num_ops ? &ops->ops[i + 1] : op;
-        const char *name  = ff_sws_op_type_name(op->op);
-        char buf[32];
-
-        av_log(log, lev, "  [%3s %c%c%c%c -> %c%c%c%c] ",
-               ff_sws_pixel_type_name(op->type),
-               op->comps.unused[0] ? 'X' : '.',
-               op->comps.unused[1] ? 'X' : '.',
-               op->comps.unused[2] ? 'X' : '.',
-               op->comps.unused[3] ? 'X' : '.',
-               next->comps.unused[0] ? 'X' : describe_comp_flags(op->comps.flags[0]),
-               next->comps.unused[1] ? 'X' : describe_comp_flags(op->comps.flags[1]),
-               next->comps.unused[2] ? 'X' : describe_comp_flags(op->comps.flags[2]),
-               next->comps.unused[3] ? 'X' : describe_comp_flags(op->comps.flags[3]));
-
-        switch (op->op) {
-        case SWS_OP_INVALID:
-        case SWS_OP_SWAP_BYTES:
-            av_log(log, lev, "%s\n", name);
-            break;
-        case SWS_OP_READ:
-        case SWS_OP_WRITE:
-            av_log(log, lev, "%-20s: %d elem(s) %s >> %d%s\n", name,
-                   op->rw.elems,  op->rw.packed ? "packed" : "planar",
-                   op->rw.frac,
-                   describe_order(op->op == SWS_OP_READ ? ops->order_src
-                                                        : ops->order_dst,
-                                  op->rw.packed ? 1 : op->rw.elems, buf));
-            break;
-        case SWS_OP_LSHIFT:
-            av_log(log, lev, "%-20s: << %u\n", name, op->c.u);
-            break;
-        case SWS_OP_RSHIFT:
-            av_log(log, lev, "%-20s: >> %u\n", name, op->c.u);
-            break;
-        case SWS_OP_PACK:
-        case SWS_OP_UNPACK:
-            av_log(log, lev, "%-20s: {%d %d %d %d}\n", name,
-                   op->pack.pattern[0], op->pack.pattern[1],
-                   op->pack.pattern[2], op->pack.pattern[3]);
-            break;
-        case SWS_OP_CLEAR:
-            av_log(log, lev, "%-20s: {%s %s %s %s}\n", name,
-                   op->c.q4[0].den ? PRINTQ(op->c.q4[0]) : "_",
-                   op->c.q4[1].den ? PRINTQ(op->c.q4[1]) : "_",
-                   op->c.q4[2].den ? PRINTQ(op->c.q4[2]) : "_",
-                   op->c.q4[3].den ? PRINTQ(op->c.q4[3]) : "_");
-            break;
-        case SWS_OP_SWIZZLE:
-            av_log(log, lev, "%-20s: %d%d%d%d\n", name,
-                   op->swizzle.x, op->swizzle.y, op->swizzle.z, op->swizzle.w);
-            break;
-        case SWS_OP_CONVERT:
-            av_log(log, lev, "%-20s: %s -> %s%s\n", name,
+        av_bprint_clear(&bp);
+        av_bprintf(&bp, "  [%3s %c%c%c%c -> %c%c%c%c] ",
                    ff_sws_pixel_type_name(op->type),
-                   ff_sws_pixel_type_name(op->convert.to),
-                   op->convert.expand ? " (expand)" : "");
-            break;
-        case SWS_OP_DITHER:
-            av_log(log, lev, "%-20s: %dx%d matrix + {%d %d %d %d}\n", name,
-                    1 << op->dither.size_log2, 1 << op->dither.size_log2,
-                    op->dither.y_offset[0], op->dither.y_offset[1],
-                    op->dither.y_offset[2], op->dither.y_offset[3]);
-            break;
-        case SWS_OP_MIN:
-            av_log(log, lev, "%-20s: x <= {%s %s %s %s}\n", name,
-                    op->c.q4[0].den ? PRINTQ(op->c.q4[0]) : "_",
-                    op->c.q4[1].den ? PRINTQ(op->c.q4[1]) : "_",
-                    op->c.q4[2].den ? PRINTQ(op->c.q4[2]) : "_",
-                    op->c.q4[3].den ? PRINTQ(op->c.q4[3]) : "_");
-            break;
-        case SWS_OP_MAX:
-            av_log(log, lev, "%-20s: {%s %s %s %s} <= x\n", name,
-                    op->c.q4[0].den ? PRINTQ(op->c.q4[0]) : "_",
-                    op->c.q4[1].den ? PRINTQ(op->c.q4[1]) : "_",
-                    op->c.q4[2].den ? PRINTQ(op->c.q4[2]) : "_",
-                    op->c.q4[3].den ? PRINTQ(op->c.q4[3]) : "_");
-            break;
-        case SWS_OP_LINEAR:
-            av_log(log, lev, "%-20s: %s [[%s %s %s %s %s] "
-                                        "[%s %s %s %s %s] "
-                                        "[%s %s %s %s %s] "
-                                        "[%s %s %s %s %s]]\n",
-                   name, describe_lin_mask(op->lin.mask),
-                   PRINTQ(op->lin.m[0][0]), PRINTQ(op->lin.m[0][1]), PRINTQ(op->lin.m[0][2]), PRINTQ(op->lin.m[0][3]), PRINTQ(op->lin.m[0][4]),
-                   PRINTQ(op->lin.m[1][0]), PRINTQ(op->lin.m[1][1]), PRINTQ(op->lin.m[1][2]), PRINTQ(op->lin.m[1][3]), PRINTQ(op->lin.m[1][4]),
-                   PRINTQ(op->lin.m[2][0]), PRINTQ(op->lin.m[2][1]), PRINTQ(op->lin.m[2][2]), PRINTQ(op->lin.m[2][3]), PRINTQ(op->lin.m[2][4]),
-                   PRINTQ(op->lin.m[3][0]), PRINTQ(op->lin.m[3][1]), PRINTQ(op->lin.m[3][2]), PRINTQ(op->lin.m[3][3]), PRINTQ(op->lin.m[3][4]));
-            break;
-        case SWS_OP_SCALE:
-            av_log(log, lev, "%-20s: * %s\n", name, PRINTQ(op->c.q));
-            break;
-        case SWS_OP_TYPE_NB:
-            break;
+                   op->comps.unused[0] ? 'X' : '.',
+                   op->comps.unused[1] ? 'X' : '.',
+                   op->comps.unused[2] ? 'X' : '.',
+                   op->comps.unused[3] ? 'X' : '.',
+                   next->comps.unused[0] ? 'X' : describe_comp_flags(op->comps.flags[0]),
+                   next->comps.unused[1] ? 'X' : describe_comp_flags(op->comps.flags[1]),
+                   next->comps.unused[2] ? 'X' : describe_comp_flags(op->comps.flags[2]),
+                   next->comps.unused[3] ? 'X' : describe_comp_flags(op->comps.flags[3]));
+
+        ff_sws_op_desc(&bp, op, next->comps.unused);
+
+        if (op->op == SWS_OP_READ || op->op == SWS_OP_WRITE) {
+            SwsSwizzleOp order = op->op == SWS_OP_READ ? ops->order_src : ops->order_dst;
+            if (order.mask != SWS_SWIZZLE(0, 1, 2, 3).mask) {
+                const int planes = op->rw.packed ? 1 : op->rw.elems;
+                av_bprintf(&bp, ", via {");
+                for (int i = 0; i < planes; i++)
+                    av_bprintf(&bp, "%s%d", i ? ", " : "", order.in[i]);
+                av_bprintf(&bp, "}");
+            }
         }
+
+        av_assert0(av_bprint_is_complete(&bp));
+        av_log(log, lev, "%s\n", bp.str);
 
         if (op->comps.min[0].den || op->comps.min[1].den ||
             op->comps.min[2].den || op->comps.min[3].den ||
             op->comps.max[0].den || op->comps.max[1].den ||
             op->comps.max[2].den || op->comps.max[3].den)
         {
-            av_log(log, lev_extra, "    min: {%s, %s, %s, %s}, max: {%s, %s, %s, %s}\n",
-                   next->comps.unused[0] ? "_" : PRINTQ(op->comps.min[0]),
-                   next->comps.unused[1] ? "_" : PRINTQ(op->comps.min[1]),
-                   next->comps.unused[2] ? "_" : PRINTQ(op->comps.min[2]),
-                   next->comps.unused[3] ? "_" : PRINTQ(op->comps.min[3]),
-                   next->comps.unused[0] ? "_" : PRINTQ(op->comps.max[0]),
-                   next->comps.unused[1] ? "_" : PRINTQ(op->comps.max[1]),
-                   next->comps.unused[2] ? "_" : PRINTQ(op->comps.max[2]),
-                   next->comps.unused[3] ? "_" : PRINTQ(op->comps.max[3]));
+            av_bprint_clear(&bp);
+            av_bprintf(&bp, "    min: ");
+            print_q4(&bp, op->comps.min, false, next->comps.unused);
+            av_bprintf(&bp, ", max: ");
+            print_q4(&bp, op->comps.max, false, next->comps.unused);
+            av_assert0(av_bprint_is_complete(&bp));
+            av_log(log, lev_extra, "%s\n", bp.str);
         }
 
     }
 
     av_log(log, lev, "    (X = unused, z = byteswapped, + = exact, 0 = zero)\n");
+}
+
+static int enum_ops_fmt(SwsContext *ctx, void *opaque,
+                        enum AVPixelFormat src_fmt, enum AVPixelFormat dst_fmt,
+                        int (*cb)(SwsContext *ctx, void *opaque, SwsOpList *ops))
+{
+    int ret;
+    const SwsPixelType type = SWS_PIXEL_F32;
+    SwsOpList *ops = ff_sws_op_list_alloc();
+    if (!ops)
+        return AVERROR(ENOMEM);
+
+    ff_fmt_from_pixfmt(src_fmt, &ops->src);
+    ff_fmt_from_pixfmt(dst_fmt, &ops->dst);
+    ops->src.width  = ops->dst.width  = 16;
+    ops->src.height = ops->dst.height = 16;
+
+    bool incomplete = ff_infer_colors(&ops->src.color, &ops->dst.color);
+    if (ff_sws_decode_pixfmt(ops, src_fmt) < 0 ||
+        ff_sws_decode_colors(ctx, type, ops, &ops->src, &incomplete) < 0 ||
+        ff_sws_encode_colors(ctx, type, ops, &ops->src, &ops->dst, &incomplete) < 0 ||
+        ff_sws_encode_pixfmt(ops, dst_fmt) < 0)
+    {
+        ret = 0; /* silently skip unsupported formats */
+        goto fail;
+    }
+
+    ret = ff_sws_op_list_optimize(ops);
+    if (ret < 0)
+        goto fail;
+
+    ret = cb(ctx, opaque, ops);
+    if (ret < 0)
+        goto fail;
+
+fail:
+    ff_sws_op_list_free(&ops);
+    return ret;
+}
+
+int ff_sws_enum_op_lists(SwsContext *ctx, void *opaque,
+                         enum AVPixelFormat src_fmt, enum AVPixelFormat dst_fmt,
+                         int (*cb)(SwsContext *ctx, void *opaque, SwsOpList *ops))
+{
+    const AVPixFmtDescriptor *src_start = av_pix_fmt_desc_next(NULL);
+    const AVPixFmtDescriptor *dst_start = src_start;
+    if (src_fmt != AV_PIX_FMT_NONE)
+        src_start = av_pix_fmt_desc_get(src_fmt);
+    if (dst_fmt != AV_PIX_FMT_NONE)
+        dst_start = av_pix_fmt_desc_get(dst_fmt);
+
+    const AVPixFmtDescriptor *src, *dst;
+    for (src = src_start; src; src = av_pix_fmt_desc_next(src)) {
+        const enum AVPixelFormat src_f = av_pix_fmt_desc_get_id(src);
+        for (dst = dst_start; dst; dst = av_pix_fmt_desc_next(dst)) {
+            const enum AVPixelFormat dst_f = av_pix_fmt_desc_get_id(dst);
+            int ret = enum_ops_fmt(ctx, opaque, src_f, dst_f, cb);
+            if (ret < 0)
+                return ret;
+            if (dst_fmt != AV_PIX_FMT_NONE)
+                break;
+        }
+        if (src_fmt != AV_PIX_FMT_NONE)
+            break;
+    }
+
+    return 0;
+}
+
+struct EnumOpaque {
+    void *opaque;
+    int (*cb)(SwsContext *ctx, void *opaque, SwsOp *op);
+};
+
+static int enum_ops(SwsContext *ctx, void *opaque, SwsOpList *ops)
+{
+    struct EnumOpaque *priv = opaque;
+    for (int i = 0; i < ops->num_ops; i++) {
+        int ret = priv->cb(ctx, priv->opaque, &ops->ops[i]);
+        if (ret < 0)
+            return ret;
+    }
+    return 0;
+}
+
+int ff_sws_enum_ops(SwsContext *ctx, void *opaque,
+                    enum AVPixelFormat src_fmt, enum AVPixelFormat dst_fmt,
+                    int (*cb)(SwsContext *ctx, void *opaque, SwsOp *op))
+{
+    struct EnumOpaque priv = { opaque, cb };
+    return ff_sws_enum_op_lists(ctx, &priv, src_fmt, dst_fmt, enum_ops);
 }

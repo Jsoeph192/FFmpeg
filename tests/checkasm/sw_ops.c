@@ -32,7 +32,7 @@
 enum {
     NB_PLANES   = 4,
     PIXELS      = 64,
-    LINES       = 2,
+    LINES       = 16,
 };
 
 enum {
@@ -103,6 +103,14 @@ static void fill8(uint8_t *line, int num, unsigned range)
     }
 }
 
+static void set_range(AVRational *rangeq, unsigned range, unsigned range_def)
+{
+    if (!range)
+        range = range_def;
+    if (range && range <= INT_MAX)
+        *rangeq = (AVRational) { range, 1 };
+}
+
 static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
                       const SwsOp *ops)
 {
@@ -136,10 +144,28 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
     for (int p = 0; p < NB_PLANES; p++) {
         void *plane = src0[p];
         switch (read_op->type) {
-        case U8:    fill8(plane, sizeof(src0[p]) /  sizeof(uint8_t), ranges[p]); break;
-        case U16:  fill16(plane, sizeof(src0[p]) / sizeof(uint16_t), ranges[p]); break;
-        case U32:  fill32(plane, sizeof(src0[p]) / sizeof(uint32_t), ranges[p]); break;
-        case F32: fill32f(plane, sizeof(src0[p]) / sizeof(uint32_t), ranges[p]); break;
+        case U8:
+            fill8(plane, sizeof(src0[p]) /  sizeof(uint8_t), ranges[p]);
+            set_range(&oplist.comps_src.max[p], ranges[p], UINT8_MAX);
+            oplist.comps_src.min[p] = (AVRational) { 0, 1 };
+            break;
+        case U16:
+            fill16(plane, sizeof(src0[p]) / sizeof(uint16_t), ranges[p]);
+            set_range(&oplist.comps_src.max[p], ranges[p], UINT16_MAX);
+            oplist.comps_src.min[p] = (AVRational) { 0, 1 };
+            break;
+        case U32:
+            fill32(plane, sizeof(src0[p]) / sizeof(uint32_t), ranges[p]);
+            set_range(&oplist.comps_src.max[p], ranges[p], UINT32_MAX);
+            oplist.comps_src.min[p] = (AVRational) { 0, 1 };
+            break;
+        case F32:
+            fill32f(plane, sizeof(src0[p]) / sizeof(uint32_t), ranges[p]);
+            if (ranges[p] && ranges[p] <= INT_MAX) {
+                oplist.comps_src.max[p] = (AVRational) { ranges[p], 1 };
+                oplist.comps_src.min[p] = (AVRational) { 0, 1 };
+            }
+            break;
         }
     }
 
@@ -180,6 +206,24 @@ static void check_ops(const char *report, const unsigned ranges[NB_PLANES],
         exec.out_stride[i] = sizeof(dst0[i][0]);
         exec.in_bump[i]  = exec.in_stride[i]  - read_size;
         exec.out_bump[i] = exec.out_stride[i] - write_size;
+    }
+
+    int32_t in_bump_y[LINES];
+    if (read_op->rw.filter == SWS_OP_FILTER_V) {
+        const int *offsets = read_op->rw.kernel->offsets;
+        for (int y = 0; y < LINES - 1; y++)
+            in_bump_y[y] = offsets[y + 1] - offsets[y] - 1;
+        in_bump_y[LINES - 1] = 0;
+        exec.in_bump_y = in_bump_y;
+    }
+
+    int32_t in_offset_x[PIXELS];
+    if (read_op->rw.filter == SWS_OP_FILTER_H) {
+        const int *offsets = read_op->rw.kernel->offsets;
+        const int rw_bits = rw_pixel_bits(read_op);
+        for (int x = 0; x < PIXELS; x++)
+            in_offset_x[x] = offsets[x] * rw_bits >> 3;
+        exec.in_offset_x = in_offset_x;
     }
 
     /**
@@ -746,6 +790,79 @@ static void check_scale(void)
     }
 }
 
+static void check_filter(void)
+{
+    SwsFilterParams params = {
+        .scaler_params = { SWS_PARAM_DEFAULT, SWS_PARAM_DEFAULT },
+    };
+
+    SwsFilterWeights *filter;
+
+    for (SwsPixelType t = U8; t < SWS_PIXEL_TYPE_NB; t++) {
+        const char *type = ff_sws_pixel_type_name(t);
+        for (SwsScaler scaler = SWS_SCALE_AUTO + 1; scaler < SWS_SCALE_NB; scaler++) {
+            params.scaler = scaler;
+            params.dst_size = LINES;
+            for (int h = 1; h <= LINES; h += h) {
+                params.src_size = h;
+                int ret = ff_sws_filter_generate(NULL, &params, &filter);
+                if (ret < 0) {
+                    fail();
+                    return;
+                }
+
+                const char *name = filter->name;
+                for (int n = 1; n <= 4; n++) {
+                    check_ops(FMT("%s_filter%d_v_%dx%d_%s", name, n, PIXELS, h, type), NULL, (SwsOp[]) {
+                        {
+                            .op = SWS_OP_READ,
+                            .type = t,
+                            .rw.elems = n,
+                            .rw.filter = SWS_OP_FILTER_V,
+                            .rw.kernel = filter,
+                        }, {
+                            .op = SWS_OP_WRITE,
+                            .type = SWS_PIXEL_F32,
+                            .rw.elems = n,
+                        }, {0}
+                    });
+                }
+
+                av_refstruct_unref(&filter);
+            }
+
+            params.dst_size = PIXELS;
+            for (int w = 1; w <= PIXELS; w += w) {
+                params.src_size = w;
+                int ret = ff_sws_filter_generate(NULL, &params, &filter);
+                if (ret < 0) {
+                    fail();
+                    return;
+                }
+
+                const char *name = filter->name;
+                for (int n = 1; n <= 4; n++) {
+                    check_ops(FMT("%s_filter%d_h_%dx%d_%s", name, n, w, LINES, type), NULL, (SwsOp[]) {
+                        {
+                            .op = SWS_OP_READ,
+                            .type = t,
+                            .rw.elems = n,
+                            .rw.filter = SWS_OP_FILTER_H,
+                            .rw.kernel = filter,
+                        }, {
+                            .op = SWS_OP_WRITE,
+                            .type = SWS_PIXEL_F32,
+                            .rw.elems = n,
+                        }, {0}
+                    });
+                }
+
+                av_refstruct_unref(&filter);
+            }
+        }
+    }
+}
+
 void checkasm_check_sw_ops(void)
 {
     check_read_write();
@@ -770,4 +887,6 @@ void checkasm_check_sw_ops(void)
     report("linear");
     check_scale();
     report("scale");
+    check_filter();
+    report("filter");
 }
