@@ -85,6 +85,8 @@ typedef enum SwsCompFlags {
     SWS_COMP_SWAPPED = 1 << 3, /* byte order is swapped */
 } SwsCompFlags;
 
+#define SWS_OP_NEEDED(op, idx) (!((op)->comps.flags[idx] & SWS_COMP_GARBAGE))
+
 typedef union SwsConst {
     /* Generic constant value */
     AVRational q4[4];
@@ -157,6 +159,7 @@ typedef struct SwsConvertOp {
 
 typedef struct SwsDitherOp {
     AVRational *matrix; /* tightly packed dither matrix (refstruct) */
+    AVRational min, max; /* minimum/maximum value in `matrix` */
     int size_log2; /* size (in bits) of the dither matrix */
     int8_t y_offset[4]; /* row offset for each component, or -1 for ignored */
 } SwsDitherOp;
@@ -233,7 +236,7 @@ typedef struct SwsOp {
 /**
  * Describe an operation in human-readable form.
  */
-void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4]);
+void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op);
 
 /**
  * Frees any allocations associated with an SwsOp and sets it to {0}.
@@ -255,13 +258,13 @@ typedef struct SwsOpList {
     /* Metadata associated with this operation list */
     SwsFormat src, dst;
 
-    /* Input/output plane pointer swizzle mask */
-    SwsSwizzleOp order_src, order_dst;
+    /* Input/output plane indices */
+    uint8_t plane_src[4], plane_dst[4];
 
     /**
      * Source component metadata associated with pixel values from each
      * corresponding component (in plane/memory order, i.e. not affected by
-     * `order_src`). Lets the optimizer know additional information about
+     * `plane_src`). Lets the optimizer know additional information about
      * the value range and/or pixel data to expect.
      *
      * The default value of {0} is safe to pass in the case that no additional

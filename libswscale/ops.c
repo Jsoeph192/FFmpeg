@@ -293,7 +293,6 @@ static void apply_filter_weights(SwsComps *comps, const SwsComps *prev,
 /* Infer + propagate known information about components */
 void ff_sws_op_list_update_comps(SwsOpList *ops)
 {
-    SwsComps next = { .unused = {true, true, true, true} };
     SwsComps prev = { .flags = {
         SWS_COMP_GARBAGE, SWS_COMP_GARBAGE, SWS_COMP_GARBAGE, SWS_COMP_GARBAGE,
     }};
@@ -305,6 +304,7 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
         switch (op->op) {
         case SWS_OP_READ:
         case SWS_OP_LINEAR:
+        case SWS_OP_DITHER:
         case SWS_OP_SWAP_BYTES:
         case SWS_OP_UNPACK:
         case SWS_OP_FILTER_H:
@@ -323,7 +323,7 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
             /* Active components are taken from the user-provided values,
              * other components are explicitly stripped */
             for (int i = 0; i < op->rw.elems; i++) {
-                const int idx = op->rw.packed ? i : ops->order_src.in[i];
+                const int idx = op->rw.packed ? i : ops->plane_src[i];
                 op->comps.flags[i] = ops->comps_src.flags[idx];
                 op->comps.min[i]   = ops->comps_src.min[idx];
                 op->comps.max[i]   = ops->comps_src.max[idx];
@@ -364,8 +364,15 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
             break;
         case SWS_OP_DITHER:
             /* Strip zero flag because of the nonzero dithering offset */
-            for (int i = 0; i < 4; i++)
+            for (int i = 0; i < 4; i++) {
+                op->comps.min[i] = prev.min[i];
+                op->comps.max[i] = prev.max[i];
+                if (op->dither.y_offset[i] < 0)
+                    continue;
                 op->comps.flags[i] = prev.flags[i] & ~SWS_COMP_ZERO;
+                op->comps.min[i] = av_add_q(op->comps.min[i], op->dither.min);
+                op->comps.max[i] = av_add_q(op->comps.max[i], op->dither.max);
+            }
             break;
         case SWS_OP_UNPACK:
             for (int i = 0; i < 4; i++) {
@@ -468,16 +475,25 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
     }
 
     /* Backwards pass, solves for component dependencies */
+    bool need_out[4] = { false, false, false, false };
     for (int n = ops->num_ops - 1; n >= 0; n--) {
         SwsOp *op = &ops->ops[n];
+        bool need_in[4] = { false, false, false, false };
+
+        for (int i = 0; i < 4; i++) {
+            if (!need_out[i]) {
+                op->comps.flags[i] = SWS_COMP_GARBAGE;
+                op->comps.min[i] = op->comps.max[i] = (AVRational) {0};
+            }
+        }
 
         switch (op->op) {
         case SWS_OP_READ:
         case SWS_OP_WRITE:
             for (int i = 0; i < op->rw.elems; i++)
-                op->comps.unused[i] = op->op == SWS_OP_READ;
+                need_in[i] = op->op == SWS_OP_WRITE;
             for (int i = op->rw.elems; i < 4; i++)
-                op->comps.unused[i] = next.unused[i];
+                need_in[i] = need_out[i];
             break;
         case SWS_OP_SWAP_BYTES:
         case SWS_OP_LSHIFT:
@@ -490,55 +506,40 @@ void ff_sws_op_list_update_comps(SwsOpList *ops)
         case SWS_OP_FILTER_H:
         case SWS_OP_FILTER_V:
             for (int i = 0; i < 4; i++)
-                op->comps.unused[i] = next.unused[i];
+                need_in[i] = need_out[i];
             break;
-        case SWS_OP_UNPACK: {
-            bool unused = true;
-            for (int i = 0; i < 4; i++) {
-                if (op->pack.pattern[i])
-                    unused &= next.unused[i];
-                op->comps.unused[i] = i > 0;
-            }
-            op->comps.unused[0] = unused;
+        case SWS_OP_UNPACK:
+            for (int i = 0; i < 4 && op->pack.pattern[i]; i++)
+                need_in[0] |= need_out[i];
             break;
-        }
         case SWS_OP_PACK:
-            for (int i = 0; i < 4; i++) {
-                if (op->pack.pattern[i])
-                    op->comps.unused[i] = next.unused[0];
-                else
-                    op->comps.unused[i] = true;
-            }
+            for (int i = 0; i < 4 && op->pack.pattern[i]; i++)
+                need_in[i] = need_out[0];
             break;
         case SWS_OP_CLEAR:
             for (int i = 0; i < 4; i++) {
-                if (op->c.q4[i].den)
-                    op->comps.unused[i] = true;
-                else
-                    op->comps.unused[i] = next.unused[i];
+                if (!op->c.q4[i].den)
+                    need_in[i] = need_out[i];
             }
             break;
-        case SWS_OP_SWIZZLE: {
-            bool unused[4] = { true, true, true, true };
+        case SWS_OP_SWIZZLE:
             for (int i = 0; i < 4; i++)
-                unused[op->swizzle.in[i]] &= next.unused[i];
-            for (int i = 0; i < 4; i++)
-                op->comps.unused[i] = unused[i];
+                need_in[op->swizzle.in[i]] |= need_out[i];
             break;
-        }
         case SWS_OP_LINEAR:
-            for (int j = 0; j < 4; j++) {
-                bool unused = true;
-                for (int i = 0; i < 4; i++) {
+            for (int i = 0; i < 4; i++) {
+                for (int j = 0; j < 4; j++) {
                     if (op->lin.m[i][j].num)
-                        unused &= next.unused[i];
+                        need_in[j] |= need_out[i];
                 }
-                op->comps.unused[j] = unused;
             }
             break;
         }
 
-        next = op->comps;
+        for (int i = 0; i < 4; i++) {
+            need_out[i] = need_in[i];
+            op->comps.unused[i] = !need_in[i];
+        }
     }
 }
 
@@ -566,7 +567,8 @@ SwsOpList *ff_sws_op_list_alloc(void)
     if (!ops)
         return NULL;
 
-    ops->order_src = ops->order_dst = SWS_SWIZZLE(0, 1, 2, 3);
+    for (int i = 0; i < 4; i++)
+        ops->plane_src[i] = ops->plane_dst[i] = i;
     ff_fmt_clear(&ops->src);
     ff_fmt_clear(&ops->dst);
     return ops;
@@ -693,7 +695,7 @@ bool ff_sws_op_list_is_noop(const SwsOpList *ops)
      */
     const int num_planes = read->rw.packed ? 1 : read->rw.elems;
     for (int i = 0; i < num_planes; i++) {
-        if (ops->order_src.in[i] != ops->order_dst.in[i])
+        if (ops->plane_src[i] != ops->plane_dst[i])
             return false;
     }
 
@@ -794,13 +796,13 @@ static void print_q(AVBPrint *bp, const AVRational q, bool ignore_den0)
 }
 
 static void print_q4(AVBPrint *bp, const AVRational q4[4], bool ignore_den0,
-                     const bool unused[4])
+                     const SwsCompFlags flags[4])
 {
     av_bprintf(bp, "{");
     for (int i = 0; i < 4; i++) {
         if (i)
             av_bprintf(bp, " ");
-        if (unused && unused[i]) {
+        if (flags[i] & SWS_COMP_GARBAGE) {
             av_bprintf(bp, "_");
         } else {
             print_q(bp, q4[i], ignore_den0);
@@ -809,7 +811,7 @@ static void print_q4(AVBPrint *bp, const AVRational q4[4], bool ignore_den0,
     av_bprintf(bp, "}");
 }
 
-void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
+void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op)
 {
     const char *name  = ff_sws_op_type_name(op->op);
 
@@ -844,7 +846,7 @@ void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
         break;
     case SWS_OP_CLEAR:
         av_bprintf(bp, "%-20s: ", name);
-        print_q4(bp, op->c.q4, true, unused);
+        print_q4(bp, op->c.q4, true, op->comps.flags);
         break;
     case SWS_OP_SWIZZLE:
         av_bprintf(bp, "%-20s: %d%d%d%d", name,
@@ -864,11 +866,11 @@ void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
         break;
     case SWS_OP_MIN:
         av_bprintf(bp, "%-20s: x <= ", name);
-        print_q4(bp, op->c.q4, true, unused);
+        print_q4(bp, op->c.q4, true, op->comps.flags);
         break;
     case SWS_OP_MAX:
         av_bprintf(bp, "%-20s: ", name);
-        print_q4(bp, op->c.q4, true, unused);
+        print_q4(bp, op->c.q4, true, op->comps.flags);
         av_bprintf(bp, " <= x");
         break;
     case SWS_OP_LINEAR:
@@ -884,7 +886,9 @@ void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
         av_bprintf(bp, "]");
         break;
     case SWS_OP_SCALE:
-        av_bprintf(bp, "%-20s: * %d/%d", name, op->c.q.num, op->c.q.den);
+        av_bprintf(bp, "%-20s: * %d", name, op->c.q.num);
+        if (op->c.q.den != 1)
+            av_bprintf(bp, "/%d", op->c.q.den);
         break;
     case SWS_OP_FILTER_H:
     case SWS_OP_FILTER_V: {
@@ -897,6 +901,20 @@ void ff_sws_op_desc(AVBPrint *bp, const SwsOp *op, const bool unused[4])
     case SWS_OP_TYPE_NB:
         break;
     }
+}
+
+static void desc_plane_order(AVBPrint *bp, int nb_planes, const uint8_t *order)
+{
+    bool inorder = true;
+    for (int i = 0; i < nb_planes; i++)
+        inorder &= order[i] == i;
+    if (inorder)
+        return;
+
+    av_bprintf(bp, ", via {");
+    for (int i = 0; i < nb_planes; i++)
+        av_bprintf(bp, "%s%d", i ? ", " : "", order[i]);
+    av_bprintf(bp, "}");
 }
 
 void ff_sws_op_list_print(void *log, int lev, int lev_extra,
@@ -912,30 +930,20 @@ void ff_sws_op_list_print(void *log, int lev, int lev_extra,
 
     for (int i = 0; i < ops->num_ops; i++) {
         const SwsOp *op   = &ops->ops[i];
-        const SwsOp *next = i + 1 < ops->num_ops ? &ops->ops[i + 1] : op;
         av_bprint_clear(&bp);
-        av_bprintf(&bp, "  [%3s %c%c%c%c -> %c%c%c%c] ",
+        av_bprintf(&bp, "  [%3s %c%c%c%c] ",
                    ff_sws_pixel_type_name(op->type),
-                   op->comps.unused[0] ? 'X' : '.',
-                   op->comps.unused[1] ? 'X' : '.',
-                   op->comps.unused[2] ? 'X' : '.',
-                   op->comps.unused[3] ? 'X' : '.',
-                   next->comps.unused[0] ? 'X' : describe_comp_flags(op->comps.flags[0]),
-                   next->comps.unused[1] ? 'X' : describe_comp_flags(op->comps.flags[1]),
-                   next->comps.unused[2] ? 'X' : describe_comp_flags(op->comps.flags[2]),
-                   next->comps.unused[3] ? 'X' : describe_comp_flags(op->comps.flags[3]));
+                   describe_comp_flags(op->comps.flags[0]),
+                   describe_comp_flags(op->comps.flags[1]),
+                   describe_comp_flags(op->comps.flags[2]),
+                   describe_comp_flags(op->comps.flags[3]));
 
-        ff_sws_op_desc(&bp, op, next->comps.unused);
+        ff_sws_op_desc(&bp, op);
 
         if (op->op == SWS_OP_READ || op->op == SWS_OP_WRITE) {
-            SwsSwizzleOp order = op->op == SWS_OP_READ ? ops->order_src : ops->order_dst;
-            if (order.mask != SWS_SWIZZLE(0, 1, 2, 3).mask) {
-                const int planes = op->rw.packed ? 1 : op->rw.elems;
-                av_bprintf(&bp, ", via {");
-                for (int i = 0; i < planes; i++)
-                    av_bprintf(&bp, "%s%d", i ? ", " : "", order.in[i]);
-                av_bprintf(&bp, "}");
-            }
+            const int planes = op->rw.packed ? 1 : op->rw.elems;
+            desc_plane_order(&bp, planes,
+                op->op == SWS_OP_READ ? ops->plane_src : ops->plane_dst);
         }
 
         av_assert0(av_bprint_is_complete(&bp));
@@ -948,9 +956,9 @@ void ff_sws_op_list_print(void *log, int lev, int lev_extra,
         {
             av_bprint_clear(&bp);
             av_bprintf(&bp, "    min: ");
-            print_q4(&bp, op->comps.min, false, next->comps.unused);
+            print_q4(&bp, op->comps.min, false, op->comps.flags);
             av_bprintf(&bp, ", max: ");
-            print_q4(&bp, op->comps.max, false, next->comps.unused);
+            print_q4(&bp, op->comps.max, false, op->comps.flags);
             av_assert0(av_bprint_is_complete(&bp));
             av_log(log, lev_extra, "%s\n", bp.str);
         }
