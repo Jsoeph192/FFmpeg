@@ -31,6 +31,7 @@ jobs:
           # Fetch latest from both remotes
           git fetch upstream
           git fetch origin
+          git config pull.rebase false
           
           # Check if we're behind upstream
           UPSTREAM_COMMIT=$(git rev-parse upstream/master)
