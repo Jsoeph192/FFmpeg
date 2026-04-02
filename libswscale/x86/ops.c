@@ -133,7 +133,7 @@ static int setup_clear(const SwsImplParams *params, SwsImplResult *out)
 {
     const SwsOp *op = params->op;
     for (int i = 0; i < 4; i++)
-        out->priv.u32[i] = (uint32_t) op->c.q4[i].num;
+        out->priv.u32[i] = (uint32_t) op->clear.value[i].num;
     return 0;
 }
 
@@ -165,7 +165,7 @@ static int setup_clear(const SwsImplParams *params, SwsImplResult *out)
 
 static int setup_shift(const SwsImplParams *params, SwsImplResult *out)
 {
-    out->priv.u16[0] = params->op->c.u;
+    out->priv.u16[0] = params->op->shift.amount;
     return 0;
 }
 
@@ -185,20 +185,20 @@ static int setup_shift(const SwsImplParams *params, SwsImplResult *out)
 #define DECL_MIN_MAX(EXT)                                                       \
     DECL_COMMON_PATTERNS(F32, min##EXT,                                         \
         .op = SWS_OP_MIN,                                                       \
-        .setup = ff_sws_setup_q4,                                               \
+        .setup = ff_sws_setup_clamp,                                            \
         .flexible = true,                                                       \
     );                                                                          \
                                                                                 \
     DECL_COMMON_PATTERNS(F32, max##EXT,                                         \
         .op = SWS_OP_MAX,                                                       \
-        .setup = ff_sws_setup_q4,                                               \
+        .setup = ff_sws_setup_clamp,                                            \
         .flexible = true,                                                       \
     );
 
 #define DECL_SCALE(EXT)                                                         \
     DECL_COMMON_PATTERNS(F32, scale##EXT,                                       \
         .op = SWS_OP_SCALE,                                                     \
-        .setup = ff_sws_setup_q,                                                \
+        .setup = ff_sws_setup_scale,                                            \
         .flexible = true,                                                       \
     );
 
@@ -941,10 +941,10 @@ static void normalize_clear(SwsOp *op)
         int i;
     } c;
 
-    ff_sws_setup_q4(&(const SwsImplParams) { .op = op }, &res);
+    ff_sws_setup_clear(&(const SwsImplParams) { .op = op }, &res);
 
     for (int i = 0; i < 4; i++) {
-        if (!op->c.q4[i].den)
+        if (!op->clear.value[i].den)
             continue;
         switch (ff_sws_pixel_type_size(op->type)) {
         case 1: c.u32 = 0x1010101U * res.priv.u8[i]; break;
@@ -952,8 +952,8 @@ static void normalize_clear(SwsOp *op)
         case 4: c.u32 = res.priv.u32[i]; break;
         }
 
-        op->c.q4[i].num = c.i;
-        op->c.q4[i].den = 1;
+        op->clear.value[i].num = c.i;
+        op->clear.value[i].den = 1;
     }
 }
 
