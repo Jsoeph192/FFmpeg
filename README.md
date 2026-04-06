@@ -46,3 +46,7 @@ Please feel free to create a pull-request **on this fork only**
 ## Building
 
 I recomend using [media-autobuild_suite](https://github.com/Jsoeph192/media-autobuild_suite)
+
+## Usage
+
+Download the latest release from the Releases page, extract the .7z and run the files. Windows SmartScreen will warn you, I had to bundle a few dlls because of the building process, just click More Info, then Run Anyway.
