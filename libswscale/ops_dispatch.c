@@ -383,6 +383,19 @@ static int rw_pixel_bits(const SwsOp *op)
     return elems * size * bits;
 }
 
+static void align_pass(SwsPass *pass, int block_size, int over_rw, int pixel_bits)
+{
+    if (!pass)
+        return;
+
+    /* Add at least as many pixels as needed to cover the padding requirement */
+    const int pad = (over_rw * 8 + pixel_bits - 1) / pixel_bits;
+
+    SwsPassBuffer *buf = pass->output;
+    buf->width_align = FFMAX(buf->width_align, block_size);
+    buf->width_pad = FFMAX(buf->width_pad, pad);
+}
+
 static int compile(SwsGraph *graph, const SwsOpList *ops, SwsPass *input,
                    SwsPass **output)
 {
@@ -395,9 +408,10 @@ static int compile(SwsGraph *graph, const SwsOpList *ops, SwsPass *input,
     if (ret < 0)
         goto fail;
 
+    const SwsCompiledOp *comp = &p->comp;
     const SwsFormat *dst = &ops->dst;
     if (p->comp.opaque) {
-        SwsCompiledOp c = p->comp;
+        SwsCompiledOp c = *comp;
         av_free(p);
         return ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
                                      input, c.slice_align, c.func_opaque,
@@ -413,8 +427,8 @@ static int compile(SwsGraph *graph, const SwsOpList *ops, SwsPass *input,
     p->exec_base = (SwsOpExec) {
         .width  = dst->width,
         .height = dst->height,
-        .block_size_in  = p->comp.block_size * p->pixel_bits_in  >> 3,
-        .block_size_out = p->comp.block_size * p->pixel_bits_out >> 3,
+        .block_size_in  = comp->block_size * p->pixel_bits_in  >> 3,
+        .block_size_out = comp->block_size * p->pixel_bits_out >> 3,
     };
 
     for (int i = 0; i < 4; i++) {
@@ -459,9 +473,15 @@ static int compile(SwsGraph *graph, const SwsOpList *ops, SwsPass *input,
         p->filter_size = filter->filter_size;
     }
 
-    return ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
-                                 input, p->comp.slice_align, op_pass_run,
-                                 op_pass_setup, p, op_pass_free, output);
+    ret = ff_sws_graph_add_pass(graph, dst->format, dst->width, dst->height,
+                                input, comp->slice_align, op_pass_run,
+                                op_pass_setup, p, op_pass_free, output);
+    if (ret < 0)
+        return ret;
+
+    align_pass(input,   comp->block_size, comp->over_read,  p->pixel_bits_in);
+    align_pass(*output, comp->block_size, comp->over_write, p->pixel_bits_out);
+    return 0;
 
 fail:
     op_pass_free(p);
