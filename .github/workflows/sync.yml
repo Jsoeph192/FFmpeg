@@ -1,0 +1,60 @@
+name: Sync FFmpeg Upstream Daily
+
+on:
+  workflow_dispatch: 
+  schedule:
+    - cron: "*/10 * * * *" 
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout your fork
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}  # Use built-in token
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Configure Git
+        run: |
+          git config user.name "GitHub Actions"
+          git config user.email "actions@github.com"
+
+      - name: Add and fetch upstream
+        run: |
+          git remote add upstream https://github.com/FFmpeg/FFmpeg.git 2>/dev/null || true
+          git fetch upstream
+
+      - name: Sync with upstream
+        run: |
+          # Fetch latest from both remotes
+          git fetch upstream
+          git fetch origin
+          git config pull.rebase false
+          
+          # Check if we're behind upstream
+          UPSTREAM_COMMIT=$(git rev-parse upstream/master)
+          LOCAL_COMMIT=$(git rev-parse HEAD)
+          
+          if [ "$UPSTREAM_COMMIT" = "$LOCAL_COMMIT" ]; then
+            echo "Already up to date with upstream"
+            exit 0
+          fi
+          
+          echo "Merging upstream changes..."
+          git pull upstream master --no-commit
+          git commit -m "Sync with upstream FFmpeg master
+            
+            Automated sync to keep fork up to date." || echo "No changes to commit"
+
+      - name: Push changes
+        run: |
+          git push origin HEAD:${{ github.ref_name || 'master' }}
+          echo "Successfully synced with upstream!"
+
+      - name: Summary
+        run: |
+          echo "=== Sync Summary ==="
+          echo "Sync completed at: $(date -u)"
+          echo "Current commit: $(git rev-parse --short HEAD)"
