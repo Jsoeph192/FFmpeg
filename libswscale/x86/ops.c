@@ -25,21 +25,21 @@
 
 #include "../ops_chain.h"
 
-#define DECL_ENTRY(TYPE, NAME, ...)                                             \
+#define DECL_ENTRY(TYPE, MASK, NAME, ...)                                       \
     static const SwsOpEntry op_##NAME = {                                       \
         .type = SWS_PIXEL_##TYPE,                                               \
+        .mask = MASK,                                                           \
         __VA_ARGS__                                                             \
     }
 
-#define DECL_ASM(TYPE, NAME, ...)                                               \
+#define DECL_ASM(TYPE, MASK, NAME, ...)                                         \
     void ff_##NAME(void);                                                       \
-    DECL_ENTRY(TYPE, NAME,                                                      \
+    DECL_ENTRY(TYPE, MASK, NAME,                                                \
         .func = ff_##NAME,                                                      \
         __VA_ARGS__)
 
 #define DECL_PATTERN(TYPE, NAME, X, Y, Z, W, ...)                               \
-    DECL_ASM(TYPE, p##X##Y##Z##W##_##NAME,                                      \
-        .unused = { !X, !Y, !Z, !W },                                           \
+    DECL_ASM(TYPE, SWS_COMP_MASK(X, Y, Z, W), p##X##Y##Z##W##_##NAME,           \
         __VA_ARGS__                                                             \
     )
 
@@ -74,7 +74,7 @@ static int setup_rw(const SwsImplParams *params, SwsImplResult *out)
 }
 
 #define DECL_RW(EXT, TYPE, NAME, OP, ELEMS, PACKED, FRAC)                       \
-    DECL_ASM(TYPE, NAME##ELEMS##EXT,                                            \
+    DECL_ASM(TYPE, SWS_COMP_ELEMS(ELEMS), NAME##ELEMS##EXT,                     \
         .op = SWS_OP_##OP,                                                      \
         .rw = { .elems = ELEMS, .packed = PACKED, .frac = FRAC },               \
         .setup = setup_rw,                                                      \
@@ -89,12 +89,12 @@ static int setup_rw(const SwsImplParams *params, SwsImplResult *out)
     DECL_RW(EXT, U##DEPTH, write##DEPTH##_packed, WRITE, 4, true,  0)           \
 
 #define DECL_PACK_UNPACK(EXT, TYPE, X, Y, Z, W)                                 \
-    DECL_ASM(TYPE, pack_##X##Y##Z##W##EXT,                                      \
+    DECL_ASM(TYPE, SWS_COMP(0), pack_##X##Y##Z##W##EXT,                         \
         .op = SWS_OP_PACK,                                                      \
         .pack.pattern = {X, Y, Z, W},                                           \
     );                                                                          \
                                                                                 \
-    DECL_ASM(TYPE, unpack_##X##Y##Z##W##EXT,                                    \
+    DECL_ASM(TYPE, SWS_COMP_MASK(X, Y, Z, W), unpack_##X##Y##Z##W##EXT,         \
         .op = SWS_OP_UNPACK,                                                    \
         .pack.pattern = {X, Y, Z, W},                                           \
     );                                                                          \
@@ -108,25 +108,25 @@ static int setup_swap_bytes(const SwsImplParams *params, SwsImplResult *out)
 }
 
 #define DECL_SWAP_BYTES(EXT, TYPE, X, Y, Z, W)                                  \
-    DECL_ENTRY(TYPE, p##X##Y##Z##W##_swap_bytes_##TYPE##EXT,                    \
+    DECL_ENTRY(TYPE, SWS_COMP_MASK(X, Y, Z, W),                                 \
+               p##X##Y##Z##W##_swap_bytes_##TYPE##EXT,                          \
         .op = SWS_OP_SWAP_BYTES,                                                \
-        .unused = { !X, !Y, !Z, !W },                                           \
         .func = ff_p##X##Y##Z##W##_shuffle##EXT,                                \
         .setup = setup_swap_bytes,                                              \
     );
 
 #define DECL_CLEAR_ALPHA(EXT, IDX)                                              \
-    DECL_ASM(U8, clear_alpha##IDX##EXT,                                         \
+    DECL_ASM(U8, SWS_COMP_ALL, clear_alpha##IDX##EXT,                           \
         .op = SWS_OP_CLEAR,                                                     \
-        .clear_value = -1,                                                      \
-        .unused[IDX] = true,                                                    \
+        .clear.mask = SWS_COMP(IDX),                                            \
+        .clear.value[IDX] = { -1, 1 },                                          \
     );                                                                          \
 
 #define DECL_CLEAR_ZERO(EXT, IDX)                                               \
-    DECL_ASM(U8, clear_zero##IDX##EXT,                                          \
+    DECL_ASM(U8, SWS_COMP_ALL, clear_zero##IDX##EXT,                            \
         .op = SWS_OP_CLEAR,                                                     \
-        .clear_value = 0,                                                       \
-        .unused[IDX] = true,                                                    \
+        .clear.mask = SWS_COMP(IDX),                                            \
+        .clear.value[IDX] = { 0, 1 },                                           \
     );
 
 static int setup_clear(const SwsImplParams *params, SwsImplResult *out)
@@ -138,14 +138,14 @@ static int setup_clear(const SwsImplParams *params, SwsImplResult *out)
 }
 
 #define DECL_CLEAR(EXT, X, Y, Z, W)                                             \
-    DECL_PATTERN(U8, clear##EXT, X, Y, Z, W,                                    \
+    DECL_ASM(U8, SWS_COMP_ALL, p##X##Y##Z##W##_clear##EXT,                      \
         .op = SWS_OP_CLEAR,                                                     \
         .setup = setup_clear,                                                   \
-        .flexible = true,                                                       \
+        .clear.mask = SWS_COMP_MASK(X, Y, Z, W),                                \
     );
 
 #define DECL_SWIZZLE(EXT, X, Y, Z, W)                                           \
-    DECL_ASM(U8, swizzle_##X##Y##Z##W##EXT,                                     \
+    DECL_ASM(U8, SWS_COMP_ALL, swizzle_##X##Y##Z##W##EXT,                       \
         .op = SWS_OP_SWIZZLE,                                                   \
         .swizzle.in = {X, Y, Z, W},                                             \
     );
@@ -203,10 +203,9 @@ static int setup_shift(const SwsImplParams *params, SwsImplResult *out)
     );
 
 #define DECL_EXPAND_BITS(EXT, BITS)                                             \
-    DECL_ASM(U##BITS, expand_bits##BITS##EXT,                                   \
+    DECL_ASM(U##BITS, SWS_COMP(0), expand_bits##BITS##EXT,                      \
         .op = SWS_OP_SCALE,                                                     \
         .scale = { .num = ((1 << (BITS)) - 1), .den = 1 },                      \
-        .unused = { false, true, true, true },                                  \
     );
 
 static int setup_dither(const SwsImplParams *params, SwsImplResult *out)
@@ -254,8 +253,14 @@ static int setup_dither(const SwsImplParams *params, SwsImplResult *out)
     return 0;
 }
 
-#define DECL_DITHER(DECL_MACRO, EXT, SIZE)                                      \
-    DECL_MACRO(F32, dither##SIZE##EXT,                                          \
+#define DECL_DITHER0(EXT)                                                       \
+    DECL_COMMON_PATTERNS(F32, dither0##EXT,                                     \
+        .op    = SWS_OP_DITHER,                                                 \
+        .setup = setup_dither,                                                  \
+    );
+
+#define DECL_DITHER(EXT, SIZE)                                                  \
+    DECL_ASM(F32, SWS_COMP_ALL, dither##SIZE##EXT,                              \
         .op    = SWS_OP_DITHER,                                                 \
         .setup = setup_dither,                                                  \
         .dither_size = SIZE,                                                    \
@@ -279,7 +284,7 @@ static int setup_linear(const SwsImplParams *params, SwsImplResult *out)
 }
 
 #define DECL_LINEAR(EXT, NAME, MASK)                                            \
-    DECL_ASM(F32, NAME##EXT,                                                    \
+    DECL_ASM(F32, SWS_COMP_ALL, NAME##EXT,                                      \
         .op    = SWS_OP_LINEAR,                                                 \
         .setup = setup_linear,                                                  \
         .linear_mask = (MASK),                                                  \
@@ -508,7 +513,7 @@ static int setup_filter_4x4_h(const SwsImplParams *params, SwsImplResult *out)
 }
 
 #define DECL_FILTER(EXT, TYPE, DIR, NAME, ELEMS, ...)                           \
-    DECL_ASM(TYPE, NAME##ELEMS##_##TYPE##EXT,                                   \
+    DECL_ASM(TYPE, SWS_COMP_ELEMS(ELEMS), NAME##ELEMS##_##TYPE##EXT,            \
         .op = SWS_OP_READ,                                                      \
         .rw.elems = ELEMS,                                                      \
         .rw.filter = SWS_OP_FILTER_##DIR,                                       \
@@ -584,16 +589,16 @@ static int setup_filter_4x4_h(const SwsImplParams *params, SwsImplResult *out)
     DECL_CLEAR_ZERO(EXT, 0)                                                     \
     DECL_CLEAR_ZERO(EXT, 1)                                                     \
     DECL_CLEAR_ZERO(EXT, 3)                                                     \
-    DECL_CLEAR(EXT, 1, 1, 1, 0)                                                 \
-    DECL_CLEAR(EXT, 0, 1, 1, 1)                                                 \
-    DECL_CLEAR(EXT, 0, 0, 1, 1)                                                 \
-    DECL_CLEAR(EXT, 1, 0, 0, 1)                                                 \
-    DECL_CLEAR(EXT, 1, 1, 0, 0)                                                 \
-    DECL_CLEAR(EXT, 0, 1, 0, 1)                                                 \
-    DECL_CLEAR(EXT, 1, 0, 1, 0)                                                 \
+    DECL_CLEAR(EXT, 0, 0, 0, 1)                                                 \
     DECL_CLEAR(EXT, 1, 0, 0, 0)                                                 \
-    DECL_CLEAR(EXT, 0, 1, 0, 0)                                                 \
-    DECL_CLEAR(EXT, 0, 0, 1, 0)                                                 \
+    DECL_CLEAR(EXT, 1, 1, 0, 0)                                                 \
+    DECL_CLEAR(EXT, 0, 1, 1, 0)                                                 \
+    DECL_CLEAR(EXT, 0, 0, 1, 1)                                                 \
+    DECL_CLEAR(EXT, 1, 0, 1, 0)                                                 \
+    DECL_CLEAR(EXT, 0, 1, 0, 1)                                                 \
+    DECL_CLEAR(EXT, 0, 1, 1, 1)                                                 \
+    DECL_CLEAR(EXT, 1, 0, 1, 1)                                                 \
+    DECL_CLEAR(EXT, 1, 1, 0, 1)                                                 \
                                                                                 \
 static const SwsOpTable ops8##EXT = {                                           \
     .cpu_flags = AV_CPU_FLAG_##FLAG,                                            \
@@ -651,16 +656,16 @@ static const SwsOpTable ops8##EXT = {                                           
         &op_clear_zero0##EXT,                                                   \
         &op_clear_zero1##EXT,                                                   \
         &op_clear_zero3##EXT,                                                   \
-        REF_PATTERN(clear##EXT, 1, 1, 1, 0),                                    \
-        REF_PATTERN(clear##EXT, 0, 1, 1, 1),                                    \
-        REF_PATTERN(clear##EXT, 0, 0, 1, 1),                                    \
-        REF_PATTERN(clear##EXT, 1, 0, 0, 1),                                    \
-        REF_PATTERN(clear##EXT, 1, 1, 0, 0),                                    \
-        REF_PATTERN(clear##EXT, 0, 1, 0, 1),                                    \
-        REF_PATTERN(clear##EXT, 1, 0, 1, 0),                                    \
+        REF_PATTERN(clear##EXT, 0, 0, 0, 1),                                    \
         REF_PATTERN(clear##EXT, 1, 0, 0, 0),                                    \
-        REF_PATTERN(clear##EXT, 0, 1, 0, 0),                                    \
-        REF_PATTERN(clear##EXT, 0, 0, 1, 0),                                    \
+        REF_PATTERN(clear##EXT, 1, 1, 0, 0),                                    \
+        REF_PATTERN(clear##EXT, 0, 1, 1, 0),                                    \
+        REF_PATTERN(clear##EXT, 0, 0, 1, 1),                                    \
+        REF_PATTERN(clear##EXT, 1, 0, 1, 0),                                    \
+        REF_PATTERN(clear##EXT, 0, 1, 0, 1),                                    \
+        REF_PATTERN(clear##EXT, 0, 1, 1, 1),                                    \
+        REF_PATTERN(clear##EXT, 1, 0, 1, 1),                                    \
+        REF_PATTERN(clear##EXT, 1, 1, 0, 1),                                    \
         NULL                                                                    \
     },                                                                          \
 };
@@ -726,29 +731,36 @@ static const SwsOpTable ops16##EXT = {                                          
     DECL_EXPAND(EXT,   U8, U32)                                                 \
     DECL_MIN_MAX(EXT)                                                           \
     DECL_SCALE(EXT)                                                             \
-    DECL_DITHER(DECL_COMMON_PATTERNS, EXT, 0)                                   \
-    DECL_DITHER(DECL_ASM, EXT, 1)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 2)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 3)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 4)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 5)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 6)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 7)                                               \
-    DECL_DITHER(DECL_ASM, EXT, 8)                                               \
+    DECL_DITHER0(EXT)                                                           \
+    DECL_DITHER(EXT, 1)                                                         \
+    DECL_DITHER(EXT, 2)                                                         \
+    DECL_DITHER(EXT, 3)                                                         \
+    DECL_DITHER(EXT, 4)                                                         \
+    DECL_DITHER(EXT, 5)                                                         \
+    DECL_DITHER(EXT, 6)                                                         \
+    DECL_DITHER(EXT, 7)                                                         \
+    DECL_DITHER(EXT, 8)                                                         \
     DECL_LINEAR(EXT, luma,      SWS_MASK_LUMA)                                  \
     DECL_LINEAR(EXT, alpha,     SWS_MASK_ALPHA)                                 \
     DECL_LINEAR(EXT, lumalpha,  SWS_MASK_LUMA | SWS_MASK_ALPHA)                 \
+    DECL_LINEAR(EXT, yalpha,    SWS_MASK(1, 1))                                 \
     DECL_LINEAR(EXT, dot3,      0x7)                                            \
-    DECL_LINEAR(EXT, row0,      SWS_MASK_ROW(0))                                \
-    DECL_LINEAR(EXT, row0a,     SWS_MASK_ROW(0) | SWS_MASK_ALPHA)               \
+    DECL_LINEAR(EXT, dot3a,     0x7 | SWS_MASK_ALPHA)                           \
+    DECL_LINEAR(EXT, row0,      SWS_MASK_ROW(0) ^ SWS_MASK(0, 3))               \
     DECL_LINEAR(EXT, diag3,     SWS_MASK_DIAG3)                                 \
     DECL_LINEAR(EXT, diag4,     SWS_MASK_DIAG4)                                 \
     DECL_LINEAR(EXT, diagoff3,  SWS_MASK_DIAG3 | SWS_MASK_OFF3)                 \
-    DECL_LINEAR(EXT, matrix3,   SWS_MASK_MAT3)                                  \
     DECL_LINEAR(EXT, affine3,   SWS_MASK_MAT3 | SWS_MASK_OFF3)                  \
-    DECL_LINEAR(EXT, affine3a,  SWS_MASK_MAT3 | SWS_MASK_OFF3 | SWS_MASK_ALPHA) \
-    DECL_LINEAR(EXT, matrix4,   SWS_MASK_MAT4)                                  \
-    DECL_LINEAR(EXT, affine4,   SWS_MASK_MAT4 | SWS_MASK_OFF4)                  \
+    DECL_LINEAR(EXT, affine3uv,                                                 \
+        SWS_MASK_MAT3 | SWS_MASK_OFF(1) | SWS_MASK_OFF(2))                      \
+    DECL_LINEAR(EXT, affine3x,                                                  \
+        SWS_MASK_MAT3 ^ SWS_MASK(0, 1) | SWS_MASK_OFF3)                         \
+    DECL_LINEAR(EXT, affine3xa,                                                 \
+        SWS_MASK_MAT3 ^ SWS_MASK(0, 1) | SWS_MASK_OFF3 | SWS_MASK_ALPHA)        \
+    DECL_LINEAR(EXT, affine3xy,                                                 \
+        SWS_MASK_MAT3 ^ SWS_MASK(0, 0) ^ SWS_MASK(0, 1) | SWS_MASK_OFF3)        \
+    DECL_LINEAR(EXT, affine3a,                                                  \
+        SWS_MASK_MAT3 | SWS_MASK_OFF3 | SWS_MASK_ALPHA)                         \
     DECL_FILTERS_GENERIC(EXT,  U8)                                              \
     DECL_FILTERS_GENERIC(EXT, U16)                                              \
     DECL_FILTERS_GENERIC(EXT, F32)                                              \
@@ -792,17 +804,19 @@ static const SwsOpTable ops32##EXT = {                                          
         &op_luma##EXT,                                                          \
         &op_alpha##EXT,                                                         \
         &op_lumalpha##EXT,                                                      \
+        &op_yalpha##EXT,                                                        \
         &op_dot3##EXT,                                                          \
+        &op_dot3a##EXT,                                                         \
         &op_row0##EXT,                                                          \
-        &op_row0a##EXT,                                                         \
         &op_diag3##EXT,                                                         \
         &op_diag4##EXT,                                                         \
         &op_diagoff3##EXT,                                                      \
-        &op_matrix3##EXT,                                                       \
         &op_affine3##EXT,                                                       \
+        &op_affine3uv##EXT,                                                     \
+        &op_affine3x##EXT,                                                      \
+        &op_affine3xa##EXT,                                                     \
+        &op_affine3xy##EXT,                                                     \
         &op_affine3a##EXT,                                                      \
-        &op_matrix4##EXT,                                                       \
-        &op_affine4##EXT,                                                       \
         REF_FILTERS(filter_fma_v, _U8##EXT),                                    \
         REF_FILTERS(filter_fma_v, _U16##EXT),                                   \
         REF_FILTERS(filter_fma_v, _F32##EXT),                                   \
@@ -953,7 +967,7 @@ static void normalize_clear(SwsOp *op)
     ff_sws_setup_clear(&(const SwsImplParams) { .op = op }, &res);
 
     for (int i = 0; i < 4; i++) {
-        if (!op->clear.value[i].den)
+        if (!SWS_COMP_TEST(op->clear.mask, i))
             continue;
         switch (ff_sws_pixel_type_size(op->type)) {
         case 1: c.u32 = 0x1010101U * res.priv.u8[i]; break;
