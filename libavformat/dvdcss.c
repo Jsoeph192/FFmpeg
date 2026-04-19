@@ -163,7 +163,7 @@ static void free_title_list(DVDTitleList *list)
 }
 
 /* Scan VIDEO_TS-like directory and build title list */
-static int scan_titles(AVFormatContext *s, DVDContext *dvd)
+static int scan_titles(URLContext *h, DVDContext *dvd)
 {
     DVDTitleList list = { 0 };
     DIR *dir;
@@ -173,7 +173,7 @@ static int scan_titles(AVFormatContext *s, DVDContext *dvd)
 
     dir = opendir(dvd->root_path);
     if (!dir) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: cannot open directory '%s'\n", dvd->root_path);
+        av_log(h, AV_LOG_ERROR, "dvdcss: cannot open directory '%s'\n", dvd->root_path);
         return AVERROR(errno);
     }
 
@@ -187,7 +187,7 @@ static int scan_titles(AVFormatContext *s, DVDContext *dvd)
     }
 
     if (max_titles <= 0) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: no VOB files found in '%s'\n", dvd->root_path);
+        av_log(h, AV_LOG_ERROR, "dvdcss: no VOB files found in '%s'\n", dvd->root_path);
         ret = AVERROR_INVALIDDATA;
         goto end;
     }
@@ -229,7 +229,7 @@ static int scan_titles(AVFormatContext *s, DVDContext *dvd)
 
         sz = file_size(full);
         if (sz < 0) {
-            av_log(s, AV_LOG_WARNING, "dvdcss: cannot stat '%s'\n", full);
+            av_log(h, AV_LOG_WARNING, "dvdcss: cannot stat '%s'\n", full);
             av_free(full);
             continue;
         }
@@ -285,14 +285,14 @@ end:
 }
 
 /* Print available titles with sizes */
-static void log_available_titles(AVFormatContext *s, DVDContext *dvd)
+static void log_available_titles(URLContext *h, DVDContext *dvd)
 {
-    av_log(s, AV_LOG_INFO, "dvdcss: Available titles:\n");
+    av_log(h, AV_LOG_INFO, "dvdcss: Available titles:\n");
     for (int i = 0; i < dvd->title_list.nb_titles; i++) {
         DVDTitleEntry *te = &dvd->title_list.titles[i];
         if (te->nb_vobs == 0)
             continue;
-        av_log(s, AV_LOG_INFO, "  title%d: %"PRId64" bytes (%d VOBs)\n",
+        av_log(h, AV_LOG_INFO, "  title%d: %"PRId64" bytes (%d VOBs)\n",
                te->title_number, te->total_size, te->nb_vobs);
     }
 }
@@ -326,7 +326,7 @@ static int map_logical_to_vob(DVDTitleEntry *te, int64_t logical, int *vob_index
 
 /* --- URL parsing ------------------------------------------------------- */
 
-static int parse_dvdcss_url(AVFormatContext *s, DVDContext *dvd, const char *url)
+static int parse_dvdcss_url(URLContext *h, DVDContext *dvd, const char *url)
 {
     const char *p = url;
     char *path = NULL;
@@ -335,14 +335,14 @@ static int parse_dvdcss_url(AVFormatContext *s, DVDContext *dvd, const char *url
     int ret = 0;
 
     if (!av_strstart(p, "dvdcss://", &p)) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: invalid URL, must start with dvdcss://\n");
+        av_log(h, AV_LOG_ERROR, "dvdcss: invalid URL, must start with dvdcss://\n");
         return AVERROR(EINVAL);
     }
 
     /* Everything up to /titleN is root path */
     const char *title_pos = strstr(p, "/title");
     if (!title_pos) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: no title specified, use dvdcss://<path>/titleN\n");
+        av_log(h, AV_LOG_ERROR, "dvdcss: no title specified, use dvdcss://<path>/titleN\n");
         return AVERROR(EINVAL);
     }
 
@@ -358,7 +358,7 @@ static int parse_dvdcss_url(AVFormatContext *s, DVDContext *dvd, const char *url
 
     title = strtol(title_str, NULL, 10);
     if (title <= 0) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: invalid title '%s'\n", title_str);
+        av_log(h, AV_LOG_ERROR, "dvdcss: invalid title '%s'\n", title_str);
         av_free(path);
         av_free(title_str);
         return AVERROR(EINVAL);
@@ -378,7 +378,7 @@ static int parse_dvdcss_url(AVFormatContext *s, DVDContext *dvd, const char *url
  * For real discs, you might want to open the device instead and map LBAs.
  */
 
-static int dvdcss_open_vob(AVFormatContext *s, DVDContext *dvd, const char *path)
+static int dvdcss_open_vob(URLContext *h, DVDContext *dvd, const char *path)
 {
     if (dvd->css) {
         dvdcss_close(dvd->css);
@@ -387,7 +387,7 @@ static int dvdcss_open_vob(AVFormatContext *s, DVDContext *dvd, const char *path
 
     dvd->css = dvdcss_open(path);
     if (!dvd->css) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: failed to open '%s'\n", path);
+        av_log(h, AV_LOG_ERROR, "dvdcss: failed to open '%s'\n", path);
         return AVERROR(EIO);
     }
 
@@ -399,7 +399,7 @@ static int dvdcss_open_vob(AVFormatContext *s, DVDContext *dvd, const char *path
 }
 
 /* Read bytes from current title at logical_pos into buf */
-static int dvdcss_read_bytes(AVFormatContext *s, DVDContext *dvd, unsigned char *buf, int size)
+static int dvdcss_read_bytes(URLContext *h, DVDContext *dvd, unsigned char *buf, int size)
 {
     int64_t pos = dvd->logical_pos;
     int total_read = 0;
@@ -421,7 +421,7 @@ static int dvdcss_read_bytes(AVFormatContext *s, DVDContext *dvd, unsigned char 
 
         if (vob_index != dvd->pos.vob_index || dvd->css == NULL) {
             /* open new VOB */
-            ret = dvdcss_open_vob(s, dvd, dvd->current_title->vob_paths[vob_index]);
+            ret = dvdcss_open_vob(h, dvd, dvd->current_title->vob_paths[vob_index]);
             if (ret < 0)
                 return ret;
             dvd->pos.vob_index = vob_index;
@@ -484,8 +484,7 @@ static int dvdcss_read_bytes(AVFormatContext *s, DVDContext *dvd, unsigned char 
 
 static int dvdcss_url_open(URLContext *h, const char *url, int flags)
 {
-    AVFormatContext *s = h->priv_data;
-    DVDContext *dvd = s->priv_data;
+    DVDContext *dvd = h->priv_data;
     int ret;
 
     dvd->sector_size = 2048;
@@ -493,12 +492,12 @@ static int dvdcss_url_open(URLContext *h, const char *url, int flags)
     if (!dvd->sector_buf)
         return AVERROR(ENOMEM);
 
-    ret = parse_dvdcss_url(s, dvd, url);
+    ret = parse_dvdcss_url(h, dvd, url);
     if (ret < 0)
         return ret;
 
     /* Scan titles in root_path (must be VIDEO_TS-like) */
-    ret = scan_titles(s, dvd);
+    ret = scan_titles(h, dvd);
     if (ret < 0)
         return ret;
 
@@ -514,9 +513,9 @@ static int dvdcss_url_open(URLContext *h, const char *url, int flags)
     }
 
     if (dvd->current_title_index < 0 || !dvd->current_title) {
-        av_log(s, AV_LOG_ERROR, "dvdcss: title %d not found on '%s'\n",
+        av_log(h, AV_LOG_ERROR, "dvdcss: title %d not found on '%s'\n",
                dvd->title_number, dvd->root_path);
-        log_available_titles(s, dvd);
+        log_available_titles(h, dvd);
         return AVERROR_INVALIDDATA;
     }
 
@@ -525,30 +524,27 @@ static int dvdcss_url_open(URLContext *h, const char *url, int flags)
     dvd->pos.vob_index = -1;
     dvd->pos.offset_in_vob = 0;
 
-    av_log(s, AV_LOG_INFO, "dvdcss: using title %d (%"PRId64" bytes, %d VOBs)\n",
+    av_log(h, AV_LOG_INFO, "dvdcss: using title %d (%"PRId64" bytes, %d VOBs)\n",
            dvd->title_number, dvd->logical_size, dvd->current_title->nb_vobs);
 
     h->is_streamed = 0;
-    h->is_connected = 1;
 
     return 0;
 }
 
 static int dvdcss_url_read(URLContext *h, unsigned char *buf, int size)
 {
-    AVFormatContext *s = h->priv_data;
-    DVDContext *dvd = s->priv_data;
+    DVDContext *dvd = h->priv_data;
 
     if (size <= 0)
         return 0;
 
-    return dvdcss_read_bytes(s, dvd, buf, size);
+    return dvdcss_read_bytes(h, dvd, buf, size);
 }
 
 static int64_t dvdcss_url_seek(URLContext *h, int64_t pos, int whence)
 {
-    AVFormatContext *s = h->priv_data;
-    DVDContext *dvd = s->priv_data;
+    DVDContext *dvd = h->priv_data;
     int64_t new_pos;
 
     switch (whence) {
@@ -579,8 +575,7 @@ static int64_t dvdcss_url_seek(URLContext *h, int64_t pos, int whence)
 
 static int dvdcss_url_close(URLContext *h)
 {
-    AVFormatContext *s = h->priv_data;
-    DVDContext *dvd = s->priv_data;
+    DVDContext *dvd = h->priv_data;
 
     if (dvd->css) {
         dvdcss_close(dvd->css);
@@ -608,6 +603,7 @@ const URLProtocol ff_dvdcss_protocol = {
     .url_close      = dvdcss_url_close,
     .priv_data_size = sizeof(DVDContext),
     .priv_data_class= &dvdcss_class,
+    .flags          = URL_PROTOCOL_FLAG_NESTED_SCHEME,
 };
 
 #endif /* CONFIG_DVDCSS_PROTOCOL */
