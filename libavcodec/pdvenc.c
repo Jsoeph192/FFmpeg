@@ -44,13 +44,7 @@ typedef struct PDVEncContext {
 static av_cold int encode_init(AVCodecContext *avctx)
 {
     PDVEncContext *s = avctx->priv_data;
-    size_t frame_size;
     int ret;
-
-    if (avctx->pix_fmt != AV_PIX_FMT_MONOBLACK) {
-        av_log(avctx, AV_LOG_ERROR, "Only monob pixel format is supported.\n");
-        return AVERROR(EINVAL);
-    }
 
     ret = av_image_check_size(avctx->width, avctx->height, 0, avctx);
     if (ret < 0)
@@ -58,36 +52,20 @@ static av_cold int encode_init(AVCodecContext *avctx)
 
     s->row_size   = (avctx->width + 7) >> 3;
 
-    ret = av_size_mult(s->row_size, avctx->height, &frame_size);
-    if (ret < 0 || frame_size > INT_MAX) {
-        av_log(avctx, AV_LOG_ERROR,
-               "Cannot allocate frame buffer for dimensions %dx%d.\n",
-               avctx->width, avctx->height);
-        return AVERROR(EINVAL);
-    }
-    s->frame_size = frame_size;
+    s->frame_size = s->row_size * avctx->height;
 
     s->previous_frame = av_malloc(s->frame_size);
     s->work_frame     = av_malloc(s->frame_size);
     if (!s->previous_frame || !s->work_frame)
-        goto fail;
+        return AVERROR(ENOMEM);
 
     avctx->bits_per_coded_sample = 1;
 
-    ret = ff_deflate_init(&s->zstream,
-                          avctx->compression_level == FF_COMPRESSION_DEFAULT ?
-                          Z_DEFAULT_COMPRESSION :
-                          av_clip(avctx->compression_level, 0, 9),
-                          avctx);
-    if (ret < 0)
-        goto fail;
-
-    return 0;
-
-fail:
-    av_freep(&s->work_frame);
-    av_freep(&s->previous_frame);
-    return ret < 0 ? ret : AVERROR(ENOMEM);
+    return ff_deflate_init(&s->zstream,
+                           avctx->compression_level == FF_COMPRESSION_DEFAULT ?
+                           Z_DEFAULT_COMPRESSION :
+                           av_clip(avctx->compression_level, 0, 9),
+                           avctx);
 }
 
 static av_cold int encode_end(AVCodecContext *avctx)
